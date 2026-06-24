@@ -4,6 +4,10 @@
 # Local editor / workspace config
 .claude/
 
+# Installed agent skills (payload) — re-installable from skills-lock.json
+# via: npx skills add supabase/agent-skills
+.agents/
+
 # Large source dataset — derived into data/scarborough.geojson and re-downloadable
 # from City of Toronto Open Data (URL in README). Not needed at runtime.
 data/toronto-neighbourhoods.geojson
