@@ -1,4 +1,4 @@
-/* Scarborough Shoot Map — v2
+/* Scarborough Film Map — v2
    A documentary-organizing tool: projects -> locations -> footage / interviews / logistics,
    plus a proximity "plan a shoot day" generator.
    Base map: OpenStreetMap (ODbL). Boundaries: City of Toronto Open Data (158 neighbourhoods).
