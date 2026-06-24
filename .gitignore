@@ -1,6 +1,9 @@
 # macOS
 .DS_Store
 
+# Local editor / workspace config
+.claude/
+
 # Large source dataset — derived into data/scarborough.geojson and re-downloadable
 # from City of Toronto Open Data (URL in README). Not needed at runtime.
 data/toronto-neighbourhoods.geojson
