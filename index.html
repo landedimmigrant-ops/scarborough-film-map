@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Scarborough Shoot Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <header class="side-head">
+        <h1>Scarborough <span>Shoot Map</span></h1>
+        <div class="project-bar">
+          <select id="project-select" title="Active project"></select>
+          <button id="new-project" class="icon-btn" title="New project">＋</button>
+        </div>
+        <p class="tagline">Click the map to add a location.</p>
+      </header>
+
+      <div class="controls">
+        <input id="search" type="search" placeholder="Search locations, people, notes…" autocomplete="off" />
+        <div class="row">
+          <select id="filter-status">
+            <option value="">All statuses</option>
+            <option value="idea">Idea</option>
+            <option value="scouting">Scouting</option>
+            <option value="confirmed">Confirmed</option>
+            <option value="shot">Shot</option>
+          </select>
+          <select id="filter-hood"><option value="">All neighbourhoods</option></select>
+        </div>
+        <div class="row">
+          <button id="use-location" class="btn ghost" title="Drop a pin at your current GPS location">📍 My location</button>
+          <button id="plan-day" class="btn ghost" title="Build a shoot list from nearby locations">🗓 Plan a day</button>
+        </div>
+      </div>
+
+      <div class="stats" id="stats"></div>
+      <div id="list" class="list"></div>
+
+      <footer class="side-foot">
+        <button id="export" class="btn ghost" title="Download this project as JSON">⭳ Export</button>
+        <span class="count" id="count">0 locations</span>
+      </footer>
+    </aside>
+
+    <main id="map"></main>
+
+    <!-- Location detail / editor -->
+    <section id="detail" class="panel" hidden>
+      <header class="panel-head">
+        <strong id="detail-h">Location</strong>
+        <button class="icon-btn" id="detail-close" title="Close">✕</button>
+      </header>
+      <div class="panel-body" id="detail-body"></div>
+    </section>
+
+    <!-- Shoot-day planner -->
+    <section id="planner" class="panel" hidden>
+      <header class="panel-head">
+        <strong>🗓 Plan a shoot day</strong>
+        <button class="icon-btn" id="planner-close" title="Close">✕</button>
+      </header>
+      <div class="panel-body" id="planner-body"></div>
+    </section>
+
+    <button id="sidebar-toggle" class="mobile-only" title="Toggle list">☰ Locations</button>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
