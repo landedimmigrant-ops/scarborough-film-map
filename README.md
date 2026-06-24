@@ -1,4 +1,6 @@
-# Scarborough Shoot Map
+# Scarborough Film Map
+
+Repo: **landedimmigrant-ops/scarborough-film-map** (private) · Local: `~/Documents/Dev/scarborough film map`
 
 A documentary-organizing tool built around a map of Scarborough. Locations are the spine:
 each one anchors your **footage, interviews, contacts and logistics**, is auto-tagged to its
@@ -10,8 +12,8 @@ later feed a public website and to be queried while writing the script.
 ## Run it
 
 ```bash
-# from the parent "tasks home" folder
-python3 -m http.server 8138 --directory scarborough-map
+# from this project folder
+python3 -m http.server 8138
 # open http://localhost:8138
 ```
 
@@ -116,7 +118,7 @@ where a.id = :anchor_id
 order by metres;
 ```
 
-This mirrors the Supabase PWA setup already used by the House Chores app in the parent folder.
+This mirrors the Supabase PWA setup used by the House Chores app (a separate project at `~/Documents/Dev/tasks home`).
 
 ## Roadmap
 
