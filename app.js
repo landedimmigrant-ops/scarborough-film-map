@@ -27,7 +27,7 @@ function blankLoc() {
     id: null, createdAt: Date.now(), projectId: null,
     title: "", neighbourhood: "", status: "idea", category: "Exterior",
     shootDate: "", bestTime: "", parking: "", permit: "n/a", lat: 0, lng: 0,
-    contacts: [], interviews: [], footage: [], photos: [], notes: "",
+    contacts: [], interviews: [], footage: [], photos: [], notes: "", address: "",
   };
 }
 
@@ -48,6 +48,7 @@ function rowToLoc(row, interviews, contacts, media) {
     lat: row.lat,
     lng: row.lng,
     notes: row.notes || "",
+    address: row.address || "",
     contacts: (contacts || []).map((c) => ({ id: c.id, name: c.name || "", role: c.role || "", detail: c.detail || "" })),
     interviews: (interviews || []).map((i) => ({ id: i.id, subject: i.subject || "", role: i.role || "", status: i.status || "idea" })),
     footage: (media || []).filter((m) => m.kind === "footage").map((m) => ({ id: m.id, label: m.label || "", notes: m.notes || "" })),
@@ -109,6 +110,7 @@ async function saveLocation(loc) {
     parking: loc.parking || null,
     permit: loc.permit,
     notes: loc.notes || null,
+    address: loc.address || null,
     geom: `SRID=4326;POINT(${loc.lng} ${loc.lat})`,
   };
 
@@ -212,12 +214,18 @@ async function migrateLocalStorage() {
 let hoods = [];
 const markers = new Map();
 let editing = null, isNewLoc = false, plannerAnchor = null, planCircle = null;
+let hoodBlurbs = {}, exploreMode = false, tempMarker = null, enrichToken = 0, lastFocused = null;
 
 /* ---------- map ---------- */
 const map = L.map("map", { zoomControl: true }).setView([43.773, -79.233], 12);
-L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+const osmLayer = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
 }).addTo(map);
+// Esri World Imagery — free, keyless aerial tiles for scouting actual buildings / tree cover
+const satLayer = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+  maxZoom: 19, attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+});
+let satOn = false;
 
 let hoodLayer, fitted = false;
 function fitWhenReady() {
@@ -231,11 +239,13 @@ new ResizeObserver(fitWhenReady).observe(map.getContainer());
 
 // Boot: load geojson + Supabase data in parallel, then render
 (async function boot() {
-  const [geoRes, boundaryRes, dbRes] = await Promise.all([
+  const [geoRes, boundaryRes, dbRes, blurbsData] = await Promise.all([
     fetch("data/scarborough.geojson").then((r) => r.json()),
     fetch("data/scarborough-boundary.geojson").then((r) => r.json()),
     loadDB(),
+    fetch("data/neighbourhood-blurbs.json").then((r) => r.json()).catch(() => ({})),
   ]);
+  hoodBlurbs = blurbsData || {};
 
   // Set up neighbourhoods
   const geo = geoRes;
@@ -276,7 +286,10 @@ new ResizeObserver(fitWhenReady).observe(map.getContainer());
   render();
 })().catch((e) => console.error("Boot failed:", e));
 
-map.on("click", (e) => { const d = blankLoc(); d.lat = e.latlng.lat; d.lng = e.latlng.lng; openDetail(d, true); });
+map.on("click", (e) => {
+  if (exploreMode) { exploreAt(e.latlng); return; }   // explore: show info about the place
+  markAt(e.latlng);                                    // default: drop + auto-name a pin
+});
 
 /* ---------- geo helpers ---------- */
 function pointInRing(lng, lat, ring) {
@@ -316,15 +329,23 @@ function selectHtml(id, pairs, val) {
 function bindInput(id, fn) { const el = document.getElementById(id); if (el) el.addEventListener("input", (e) => fn(e.target.value)); }
 
 /* ---------- detail editor ---------- */
+// Focus management for the slide-over panels (keyboard a11y)
+function captureFocus() { const ae = document.activeElement; if (ae && ae !== document.body && !ae.closest(".panel")) lastFocused = ae; }
+function restoreFocus() { if (lastFocused && document.body.contains(lastFocused)) { try { lastFocused.focus(); } catch (e) {} } }
+
 function openDetail(source, isNew) {
+  captureFocus();
   closePlanner();
+  clearTempMarker();
   editing = JSON.parse(JSON.stringify(source));
   isNewLoc = !!isNew;
   if (isNewLoc) editing.neighbourhood = findHood(editing.lat, editing.lng);
   document.getElementById("detail-h").textContent = isNewLoc ? "New location" : "Edit location";
   document.getElementById("detail-body").innerHTML = `
-    <div class="field"><label>Title</label><input id="f-title" value="${esc(editing.title)}" placeholder="e.g. Bluffs cliff edge"></div>
-    <div class="field"><label>Neighbourhood (auto)</label><input value="${esc(editing.neighbourhood)}" readonly></div>
+    <div class="field"><label>Title</label><input id="f-title" value="${esc(editing.title)}" placeholder="${isNewLoc ? "📍 Identifying this spot…" : "e.g. Bluffs cliff edge"}"></div>
+    <div id="nearby-chips" class="nearby-chips"></div>
+    <div class="field"><label>Neighbourhood (auto)</label><input data-hood value="${esc(editing.neighbourhood)}" readonly></div>
+    <div class="field"><label>Address (auto)</label><input id="f-address" value="${esc(editing.address)}" placeholder="auto-filled from the map"></div>
     <div class="field"><div class="row2">
       <div style="flex:1"><label>Status</label>${selectHtml("f-status", Object.keys(STATUS).map((k) => [k, STATUS[k].label]), editing.status)}</div>
       <div style="flex:1"><label>Type</label>${selectHtml("f-category", CATEGORIES.map((c) => [c, c]), editing.category)}</div>
@@ -361,6 +382,7 @@ function openDetail(source, isNew) {
   bindInput("f-best", (v) => (editing.bestTime = v));
   bindInput("f-permit", (v) => (editing.permit = v));
   bindInput("f-parking", (v) => (editing.parking = v));
+  bindInput("f-address", (v) => (editing.address = v));
   bindInput("f-notes", (v) => (editing.notes = v));
   renderContacts(); renderInterviews(); renderFootage(); renderPhotos();
 
@@ -373,7 +395,9 @@ function openDetail(source, isNew) {
   const del = document.getElementById("d-delete");
   if (del) del.onclick = () => removeLoc(editing.id);
 
-  document.getElementById("detail").hidden = false;
+  const panel = document.getElementById("detail");
+  panel.hidden = false;
+  panel.focus();   // move focus into the dialog for keyboard/screen-reader users
 }
 function repeatRow(fields, item, onRemove) {
   const row = document.createElement("div");
@@ -427,16 +451,23 @@ async function saveDetail() {
   else { const i = db.locations.findIndex((l) => l.id === editing.id); if (i >= 0) db.locations[i] = editing; }
   closeDetail(); render();
 }
-async function removeLoc(id) { await deleteLocation(id); db.locations = db.locations.filter((l) => l.id !== id); closeDetail(); render(); }
-function closeDetail() { document.getElementById("detail").hidden = true; editing = null; }
+async function removeLoc(id) {
+  const loc = db.locations.find((l) => l.id === id);
+  if (!confirm(`Delete ${loc && loc.title ? `“${loc.title}”` : "this location"}? This can't be undone.`)) return;
+  await deleteLocation(id); db.locations = db.locations.filter((l) => l.id !== id); closeDetail(); render();
+}
+function closeDetail() { document.getElementById("detail").hidden = true; editing = null; clearTempMarker(); restoreFocus(); }
 document.getElementById("detail-close").onclick = closeDetail;
 
 /* ---------- shoot-day planner ---------- */
 function openPlanner(anchor) {
   if (!anchor) return;
+  captureFocus();
   closeDetail(); plannerAnchor = anchor;
-  document.getElementById("planner").hidden = false;
+  const panel = document.getElementById("planner");
+  panel.hidden = false;
   renderPlanner(2);
+  panel.focus();
 }
 function renderPlanner(km) {
   const a = plannerAnchor;
@@ -462,6 +493,7 @@ function closePlanner() {
   document.getElementById("planner").hidden = true;
   if (planCircle) { map.removeLayer(planCircle); planCircle = null; }
   plannerAnchor = null;
+  restoreFocus();
 }
 document.getElementById("planner-close").onclick = closePlanner;
 function exportShootList(a, km, near) {
@@ -524,19 +556,190 @@ function renderList(list) {
     if (loc.permit && loc.permit !== "n/a") chips.push(`📋 ${loc.permit}`);
     const card = document.createElement("div");
     card.className = `card s-${loc.status}`;
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-label", `Open ${loc.title || "Untitled"}`);
     card.innerHTML = `
       <div class="t">${esc(loc.title)} <span class="badge ${loc.status}">${STATUS[loc.status].label}</span></div>
-      <div class="meta">📍 ${esc(loc.neighbourhood)} · ${esc(loc.category)} <span class="del" title="Delete">✕</span></div>
+      <div class="meta">📍 ${esc(loc.neighbourhood)} · ${esc(loc.category)} <button type="button" class="del" title="Delete" aria-label="Delete ${esc(loc.title)}">✕</button></div>
       ${chips.length ? `<div class="chips">${chips.map((c) => `<span class="chip">${c}</span>`).join("")}</div>` : ""}`;
-    card.onclick = (e) => {
-      if (e.target.classList.contains("del")) { removeLoc(loc.id); return; }
-      map.flyTo([loc.lat, loc.lng], 15, { duration: 0.6 });
-      openDetail(loc, false);
-    };
+    const open = () => { map.flyTo([loc.lat, loc.lng], 15, { duration: 0.6 }); openDetail(loc, false); };
+    card.onclick = (e) => { if (e.target.closest(".del")) { removeLoc(loc.id); return; } open(); };
+    card.onkeydown = (e) => { if (e.target === card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); open(); } };
     el.appendChild(card);
   });
 }
 function hoodTooltip(name) { const n = projectLocs().filter((l) => l.neighbourhood === name).length; return `<b>${name}</b><br>${n} shoot location${n === 1 ? "" : "s"}`; }
+
+/* ---------- geocoding lookups (free OpenStreetMap services, no key) ----------
+   Nominatim usage policy = low-volume only, which fits this single-user tool.
+   When this becomes a public website, swap to a self-hosted Nominatim or a keyed
+   provider (LocationIQ / Mapbox). Browsers can't set User-Agent, but the Referer
+   header they send automatically satisfies the policy for occasional requests. */
+async function reverseGeocode(lat, lng) {
+  try {
+    const d = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
+      { headers: { "Accept-Language": "en" } }
+    ).then((r) => r.json());
+    const a = d.address || {};
+    // prefer the feature's own name (park, building, landmark); else build a street address
+    const name = (d.name && d.name.trim())
+      || [a.house_number, a.road].filter(Boolean).join(" ")
+      || a.neighbourhood || a.suburb || "";
+    // keep the local part of display_name (drop the city/province/country tail)
+    const address = (d.display_name || "").split(",").slice(0, 4).join(",").trim();
+    return { name, address };
+  } catch (e) { console.error("reverseGeocode:", e); return { name: "", address: "" }; }
+}
+async function searchPlaces(q) {
+  // viewbox biases results toward Scarborough: W,N,E,S
+  const viewbox = "-79.32,43.86,-79.10,43.68";
+  try {
+    const rows = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(q)}&viewbox=${viewbox}&bounded=1&limit=6&addressdetails=1`,
+      { headers: { "Accept-Language": "en" } }
+    ).then((r) => r.json());
+    return (rows || []).map((r) => ({
+      name: r.name || (r.display_name || "").split(",")[0],
+      label: r.display_name || "",
+      lat: parseFloat(r.lat), lng: parseFloat(r.lon),
+    }));
+  } catch (e) { console.error("searchPlaces:", e); return []; }
+}
+async function nearbyFeatures(lat, lng) {
+  // every named building / park / amenity within ~60 m of the click, nearest first
+  const q = `[out:json][timeout:10];(nwr(around:60,${lat},${lng})[name];);out tags center 40;`;
+  try {
+    const data = await fetch("https://overpass-api.de/api/interpreter", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "data=" + encodeURIComponent(q),
+    }).then((r) => r.json());
+    const seen = new Set();
+    return (data.elements || [])
+      .map((el) => { const c = el.center || el; return { name: el.tags && el.tags.name, lat: c.lat, lng: c.lon }; })
+      .filter((e) => e.name && e.lat != null && !seen.has(e.name) && seen.add(e.name))
+      .map((e) => ({ ...e, d: distKm({ lat, lng }, e) }))
+      .sort((a, b) => a.d - b.d)
+      .slice(0, 6);
+  } catch (e) { console.error("nearbyFeatures:", e); return []; }
+}
+async function fetchNearestWiki(lat, lng) {
+  const geoData = await fetch(
+    `https://en.wikipedia.org/w/api.php?action=query&list=geosearch&gscoord=${lat}|${lng}&gsradius=500&gslimit=5&format=json&origin=*`
+  ).then((r) => r.json());
+  const pages = (geoData?.query?.geosearch) || [];
+  if (!pages.length) return null;
+  const title = pages[0].title;
+  const sum = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`).then((r) => r.json());
+  const extract = sum.extract || "";
+  const short = extract.length > 240 ? extract.slice(0, 240).replace(/\s\S*$/, "") + "…" : extract;
+  const url = sum.content_urls?.desktop?.page || `https://en.wikipedia.org/wiki/${encodeURIComponent(title)}`;
+  const others = pages.slice(1, 3).map((p) => esc(p.title)).join(", ");
+  return { title, short, url, others };
+}
+
+/* ---------- explore mode: neighbourhood blurb + nearest Wikipedia landmark ---------- */
+async function exploreAt(latlng) {
+  const { lat, lng } = latlng;
+  const hood = findHood(lat, lng);
+  const blurb = hoodBlurbs[hood] || "";
+  const count = projectLocs().filter((l) => l.neighbourhood === hood).length;
+  const pop = L.popup({ maxWidth: 320 }).setLatLng(latlng)
+    .setContent(exploreHtml(hood, blurb, count, lat, lng, "loading")).openOn(map);
+  let wiki = "error";
+  try { wiki = await fetchNearestWiki(lat, lng); } catch (e) { console.error("wiki:", e); }
+  if (map.hasLayer(pop)) pop.setContent(exploreHtml(hood, blurb, count, lat, lng, wiki));
+}
+function exploreHtml(hood, blurb, count, lat, lng, wiki) {
+  let wikiBlock;
+  if (wiki === "loading") wikiBlock = `<p class="info-pop-text" style="margin-top:8px">Looking up nearby landmark…</p>`;
+  else if (wiki === "error") wikiBlock = `<p class="info-pop-near" style="margin-top:8px">Landmark lookup failed.</p>`;
+  else if (wiki) wikiBlock = `<div class="info-pop-wiki-block">
+      <div class="info-pop-name" style="font-size:13px">📖 ${esc(wiki.title)}</div>
+      ${wiki.short ? `<p class="info-pop-text">${esc(wiki.short)}</p>` : ""}
+      <a class="info-pop-wiki" href="${wiki.url}" target="_blank" rel="noopener">Wikipedia →</a>
+      ${wiki.others ? `<span class="info-pop-near">Also nearby: ${wiki.others}</span>` : ""}
+    </div>`;
+  else wikiBlock = `<p class="info-pop-near" style="margin-top:8px">No Wikipedia landmark within 500 m.</p>`;
+  return `<div class="info-pop">
+    <div class="info-pop-name">${esc(hood)}</div>
+    ${blurb ? `<p class="info-pop-text">${esc(blurb)}</p>` : ""}
+    <div class="info-pop-foot">
+      <span class="info-pop-count">${count} shoot location${count !== 1 ? "s" : ""}</span>
+      <button class="btn ghost info-pop-add" onclick="__markHere(${lat},${lng})">+ Mark a spot here</button>
+    </div>
+    ${wikiBlock}
+  </div>`;
+}
+window.__markHere = function(lat, lng) { map.closePopup(); markAt({ lat, lng }); };
+
+/* ---------- mark mode: drop an auto-named pin you can fine-tune ---------- */
+function clearTempMarker() { if (tempMarker) { map.removeLayer(tempMarker); tempMarker = null; } }
+function showTempMarker(lat, lng) {
+  clearTempMarker();
+  tempMarker = L.marker([lat, lng], { draggable: true, zIndexOffset: 1000 }).addTo(map);
+  tempMarker.bindTooltip("Drag to fine-tune, then Save", { permanent: false });
+  tempMarker.on("dragend", () => {
+    const ll = tempMarker.getLatLng();
+    if (!editing) return;
+    editing.lat = ll.lat; editing.lng = ll.lng;
+    setHoodField(findHood(ll.lat, ll.lng));
+    enrichEditing(ll.lat, ll.lng);
+  });
+}
+function setHoodField(name) {
+  if (editing) editing.neighbourhood = name;
+  const el = document.querySelector('#detail [data-hood]');
+  if (el) el.value = name;
+}
+function markAt(latlng) {
+  const d = blankLoc();
+  d.lat = latlng.lat; d.lng = latlng.lng;
+  openDetail(d, true);                       // opens immediately so it feels instant
+  showTempMarker(latlng.lat, latlng.lng);    // visible, draggable pin
+  enrichEditing(latlng.lat, latlng.lng);     // fills title + address + nearby chips
+}
+async function enrichEditing(lat, lng) {
+  const token = ++enrichToken;
+  const chipsEl = document.getElementById("nearby-chips");
+  if (chipsEl) chipsEl.innerHTML = `<span class="nearby-loading">Identifying…</span>`;
+  const [geo, near] = await Promise.all([reverseGeocode(lat, lng), nearbyFeatures(lat, lng)]);
+  if (token !== enrichToken || !editing) return;  // editor was closed or moved on
+  if (!editing.title && geo.name) {               // don't clobber anything the user typed
+    editing.title = geo.name;
+    const t = document.getElementById("f-title"); if (t) t.value = geo.name;
+  }
+  if (geo.address) {
+    editing.address = geo.address;
+    const a = document.getElementById("f-address"); if (a) a.value = geo.address;
+  }
+  renderNearbyChips(near);
+}
+function renderNearbyChips(list) {
+  const el = document.getElementById("nearby-chips");
+  if (!el) return;
+  if (!list || !list.length) { el.innerHTML = ""; return; }
+  el.innerHTML = `<span class="nearby-label">Or mark:</span>` +
+    list.map((f, i) => `<button class="nearby-chip" data-i="${i}">${esc(f.name)}</button>`).join("");
+  el.querySelectorAll(".nearby-chip").forEach((btn) => {
+    btn.onclick = () => {
+      const f = list[+btn.dataset.i];
+      if (!editing) return;
+      editing.title = f.name;
+      const t = document.getElementById("f-title"); if (t) t.value = f.name;
+      editing.lat = f.lat; editing.lng = f.lng;          // snap pin to the chosen feature
+      setHoodField(findHood(f.lat, f.lng));
+      if (tempMarker) tempMarker.setLatLng([f.lat, f.lng]);
+      reverseGeocode(f.lat, f.lng).then((g) => {
+        if (!editing) return;
+        editing.address = g.address;
+        const a = document.getElementById("f-address"); if (a) a.value = g.address;
+      });
+    };
+  });
+}
 function buildHoodFilter() {
   const sel = document.getElementById("filter-hood");
   hoods.map((f) => f.properties.name).sort().forEach((n) => { const o = document.createElement("option"); o.value = o.textContent = n; sel.appendChild(o); });
@@ -560,10 +763,76 @@ document.getElementById("plan-day").onclick = () => {
 document.getElementById("use-location").onclick = () => {
   if (!navigator.geolocation) { alert("Geolocation not supported on this device."); return; }
   navigator.geolocation.getCurrentPosition(
-    (pos) => { const { latitude: lat, longitude: lng } = pos.coords; map.flyTo([lat, lng], 15); const d = blankLoc(); d.lat = lat; d.lng = lng; openDetail(d, true); },
+    (pos) => { const { latitude: lat, longitude: lng } = pos.coords; map.flyTo([lat, lng], 15); markAt({ lat, lng }); },
     (err) => alert("Couldn't get your location: " + err.message),
     { enableHighAccuracy: true, timeout: 10000 }
   );
 };
 document.getElementById("export").onclick = () => download(JSON.stringify({ project: activeProject(), locations: projectLocs() }, null, 2), `${activeProject().name.replace(/\W+/g, "-").toLowerCase()}.json`, "application/json");
 document.getElementById("sidebar-toggle").onclick = () => document.getElementById("sidebar").classList.toggle("collapsed");
+document.getElementById("explore-toggle").addEventListener("click", () => {
+  exploreMode = !exploreMode;
+  const btn = document.getElementById("explore-toggle");
+  btn.classList.toggle("active", exploreMode);
+  btn.textContent = exploreMode ? "✕ Exit explore" : "🔍 What's here?";
+  map.getContainer().style.cursor = exploreMode ? "crosshair" : "";
+  const tag = document.querySelector(".tagline");
+  if (tag) tag.textContent = exploreMode
+    ? "🔍 Explore mode — click the map for info. Exit to add locations."
+    : "Click the map to add a location.";
+});
+
+/* satellite / street base-map toggle */
+document.getElementById("sat-toggle").addEventListener("click", () => {
+  satOn = !satOn;
+  const btn = document.getElementById("sat-toggle");
+  if (satOn) { map.removeLayer(osmLayer); satLayer.addTo(map); btn.textContent = "🗺 Street map"; }
+  else { map.removeLayer(satLayer); osmLayer.addTo(map); btn.textContent = "🛰 Satellite"; }
+  btn.classList.toggle("active", satOn);
+});
+
+/* keyboard: Esc closes the open slide-over; Tab is trapped within it */
+document.addEventListener("keydown", (e) => {
+  const detail = document.getElementById("detail"), planner = document.getElementById("planner");
+  const panel = !detail.hidden ? detail : (!planner.hidden ? planner : null);
+  if (!panel) return;
+  if (e.key === "Escape") { e.preventDefault(); panel === detail ? closeDetail() : closePlanner(); return; }
+  if (e.key !== "Tab") return;
+  const f = Array.from(panel.querySelectorAll('a[href],button:not([disabled]),input,select,textarea,[tabindex]:not([tabindex="-1"])')).filter((el) => el.offsetParent !== null);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (!panel.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+  else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+
+/* place search — type a name, jump there, drop a pre-named pin */
+const placeQ = document.getElementById("place-q");
+const placeResults = document.getElementById("place-results");
+let placeTimer = null, placeList = [];
+placeQ.addEventListener("input", () => {
+  clearTimeout(placeTimer);
+  const q = placeQ.value.trim();
+  if (q.length < 3) { placeResults.hidden = true; return; }
+  placeTimer = setTimeout(async () => {
+    placeResults.hidden = false;
+    placeResults.innerHTML = `<li class="pr-empty">Searching…</li>`;
+    placeList = await searchPlaces(q);
+    if (!placeList.length) { placeResults.innerHTML = `<li class="pr-empty">No places found in Scarborough.</li>`; return; }
+    placeResults.innerHTML = placeList.map((p, i) => {
+      const sub = esc((p.label.split(",").slice(1, 3).join(",")).trim());
+      return `<li data-i="${i}">${esc(p.name)}<small>${sub}</small></li>`;
+    }).join("");
+    placeResults.querySelectorAll("li[data-i]").forEach((li) => {
+      li.onclick = () => {
+        const p = placeList[+li.dataset.i];
+        placeResults.hidden = true; placeQ.value = "";
+        map.flyTo([p.lat, p.lng], 16, { duration: 0.6 });
+        markAt({ lat: p.lat, lng: p.lng });
+      };
+    });
+  }, 350);
+});
+document.addEventListener("click", (e) => {
+  if (!document.getElementById("place-search").contains(e.target)) placeResults.hidden = true;
+});

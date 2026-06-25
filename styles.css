@@ -64,8 +64,14 @@ textarea { resize: vertical; }
 .badge { font-size: 10px; text-transform: uppercase; letter-spacing: .4px; padding: 2px 6px; border-radius: 5px; color: #0c1117; font-weight: 700; flex: 0 0 auto; }
 .badge.idea { background: var(--idea); } .badge.scouting { background: var(--scouting); }
 .badge.confirmed { background: var(--confirmed); } .badge.shot { background: var(--shot); }
-.card .del { margin-left: auto; color: var(--muted); font-size: 12px; }
+.card .del { margin-left: auto; color: var(--muted); font-size: 12px; background: none; border: none;
+  cursor: pointer; padding: 2px 6px; line-height: 1; border-radius: 5px; font-family: inherit; }
 .card .del:hover { color: #ff6b6b; }
+
+/* Visible keyboard focus (a11y) — keep outlines for keyboard users even though inputs drop them on mouse focus */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.card:focus-visible { outline-offset: -2px; }
 
 .side-foot {
   border-top: 1px solid var(--line); padding: 10px 14px; display: flex;
@@ -130,6 +136,54 @@ textarea { resize: vertical; }
 
 .mobile-only { display: none; }
 
+/* Map view toggles (explore + satellite) — stacked bottom-right */
+#explore-toggle, #sat-toggle {
+  position: absolute; right: 10px; z-index: 600;
+  background: var(--panel); border: 1px solid var(--line); color: var(--text);
+  border-radius: 8px; padding: 7px 12px; font-size: 13px; cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0,0,0,.45); font-family: inherit;
+}
+#explore-toggle { bottom: 50px; }
+#sat-toggle { bottom: 90px; }
+#explore-toggle:hover, #sat-toggle:hover { border-color: var(--accent); }
+#explore-toggle.active, #sat-toggle.active { background: var(--accent); border-color: var(--accent); color: #0c1117; font-weight: 600; }
+
+/* Place search — floating top-right over the map */
+#place-search { position: absolute; top: 10px; right: 10px; z-index: 600; width: 270px; max-width: calc(100% - 20px); }
+#place-search input { box-shadow: 0 2px 10px rgba(0,0,0,.45); }
+#place-results { list-style: none; margin: 5px 0 0; padding: 4px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  max-height: 280px; overflow-y: auto; }
+#place-results[hidden] { display: none; }
+#place-results li { padding: 7px 9px; font-size: 12.5px; border-radius: 6px; cursor: pointer; color: var(--text); line-height: 1.3; }
+#place-results li:hover { background: var(--panel-2); }
+#place-results li small { display: block; color: var(--muted); font-size: 11px; margin-top: 1px; }
+#place-results .pr-empty { color: var(--muted); font-style: italic; cursor: default; }
+#place-results .pr-empty:hover { background: none; }
+
+/* Nearby quick-pick chips in the editor */
+.nearby-chips { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin: -4px 0 12px; }
+.nearby-chips:empty { display: none; }
+.nearby-label, .nearby-loading { font-size: 11px; color: var(--muted); }
+.nearby-loading { font-style: italic; }
+.nearby-chip { font-size: 11.5px; padding: 3px 9px; background: var(--panel-2);
+  border: 1px solid var(--line); color: var(--text); border-radius: 999px; cursor: pointer; }
+.nearby-chip:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Wikipedia block inside the explore popup */
+.info-pop-wiki-block { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
+
+/* Info popup content (neighbourhood blurb + Wikipedia) */
+.info-pop { font-size: 13px; }
+.info-pop-name { font-weight: 700; font-size: 15px; margin-bottom: 6px; }
+.info-pop-text { color: var(--muted); line-height: 1.55; margin: 0 0 8px; }
+.info-pop-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--line); padding-top: 7px; flex-wrap: wrap; }
+.info-pop-count { font-size: 11.5px; color: var(--muted); }
+.info-pop-wiki { font-size: 12px; color: var(--accent); text-decoration: none; }
+.info-pop-wiki:hover { text-decoration: underline; }
+.info-pop-near { font-size: 11px; color: var(--muted); flex-basis: 100%; }
+.info-pop-add { font-size: 11.5px !important; padding: 3px 9px !important; flex: none !important; }
+
 /* Mobile / field layout */
 @media (max-width: 720px) {
   #app { flex-direction: column; }
@@ -139,4 +193,17 @@ textarea { resize: vertical; }
   .panel { width: 100%; max-width: 100%; }
   .mobile-only { display: block; position: absolute; right: 10px; bottom: 10px; z-index: 600;
     flex: none; width: auto; }
+
+  /* #9 — touch targets ≥44px on mobile (Apple HIG) */
+  .btn, .icon-btn, select, input, .nearby-chip,
+  #sat-toggle, #explore-toggle, #sidebar-toggle { min-height: 44px; }
+  .icon-btn { width: 44px; flex-basis: 44px; }
+  .repeat-row .rm { min-height: 44px; min-width: 40px; }
+  .card .del { min-width: 44px; min-height: 44px; padding: 0; margin: -8px -6px -8px auto;
+    display: inline-flex; align-items: center; justify-content: center; font-size: 15px; }
+
+  /* #1 — dock the map controls into the map band (map is the top 55vh; place them bottom-left, clear of zoom/search/attribution) */
+  #explore-toggle, #sat-toggle { right: auto; left: 10px; }
+  #explore-toggle { bottom: calc(45vh + 10px); }
+  #sat-toggle { bottom: calc(45vh + 62px); }
 }

@@ -49,24 +49,32 @@
     <main id="map"></main>
 
     <!-- Location detail / editor -->
-    <section id="detail" class="panel" hidden>
+    <section id="detail" class="panel" role="dialog" aria-modal="true" aria-labelledby="detail-h" tabindex="-1" hidden>
       <header class="panel-head">
         <strong id="detail-h">Location</strong>
-        <button class="icon-btn" id="detail-close" title="Close">✕</button>
+        <button class="icon-btn" id="detail-close" title="Close" aria-label="Close">✕</button>
       </header>
       <div class="panel-body" id="detail-body"></div>
     </section>
 
     <!-- Shoot-day planner -->
-    <section id="planner" class="panel" hidden>
+    <section id="planner" class="panel" role="dialog" aria-modal="true" aria-label="Plan a shoot day" tabindex="-1" hidden>
       <header class="panel-head">
         <strong>🗓 Plan a shoot day</strong>
-        <button class="icon-btn" id="planner-close" title="Close">✕</button>
+        <button class="icon-btn" id="planner-close" title="Close" aria-label="Close">✕</button>
       </header>
       <div class="panel-body" id="planner-body"></div>
     </section>
 
     <button id="sidebar-toggle" class="mobile-only" title="Toggle list">☰ Locations</button>
+
+    <!-- Map overlay controls -->
+    <div id="place-search">
+      <input id="place-q" type="search" placeholder="🔎 Find a place to mark…" autocomplete="off" />
+      <ul id="place-results" hidden></ul>
+    </div>
+    <button id="sat-toggle" title="Switch between street map and satellite imagery">🛰 Satellite</button>
+    <button id="explore-toggle" title="Click anywhere on the map to learn about the neighbourhood and nearby landmarks">🔍 What's here?</button>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
