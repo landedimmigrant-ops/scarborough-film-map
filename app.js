@@ -1,8 +1,12 @@
-/* Scarborough Film Map — v2
+/* Scarborough Film Map — v3 (Supabase + PostGIS)
    A documentary-organizing tool: projects -> locations -> footage / interviews / logistics,
    plus a proximity "plan a shoot day" generator.
    Base map: OpenStreetMap (ODbL). Boundaries: City of Toronto Open Data (158 neighbourhoods).
-   Storage: localStorage. The DB shape maps 1:1 to Supabase/PostGIS (see README). */
+   Storage: Supabase (PostGIS geography). Auto-migrates localStorage data on first load. */
+
+const SUPABASE_URL = "https://hflalatfowksnggygulz.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhmbGFsYXRmb3drc25nZ3lndWx6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzMjE1NzQsImV4cCI6MjA5Nzg5NzU3NH0.KFYSPtb5Ri3BgIS3I3Ne-tZxPuZPT43P6GKdWl44OAE";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const STORE_KEY = "scarborough_shoots_v2";
 const V1_KEY = "scarborough_shoots_v1";
@@ -20,25 +24,190 @@ const INTERVIEW_STATUS = ["idea", "reaching out", "scheduled", "recorded"];
 function rid(p) { return p + Math.random().toString(36).slice(2, 9); }
 function blankLoc() {
   return {
-    id: rid("loc_"), createdAt: Date.now(), projectId: null,
+    id: null, createdAt: Date.now(), projectId: null,
     title: "", neighbourhood: "", status: "idea", category: "Exterior",
     shootDate: "", bestTime: "", parking: "", permit: "n/a", lat: 0, lng: 0,
     contacts: [], interviews: [], footage: [], photos: [], notes: "",
   };
 }
-function loadDB() {
-  const raw = localStorage.getItem(STORE_KEY);
-  if (raw) { try { return JSON.parse(raw); } catch {} }
-  const proj = { id: rid("prj_"), name: "Untitled film", createdAt: Date.now() };
-  const db = { projects: [proj], activeProjectId: proj.id, locations: [] };
-  const v1 = localStorage.getItem(V1_KEY);             // carry over prototype pins
-  if (v1) { try { JSON.parse(v1).forEach((l) => db.locations.push(Object.assign(blankLoc(), l, { projectId: proj.id }))); } catch {} }
-  return db;
+
+/* --- Supabase ↔ in-memory shape helpers --- */
+function rowToLoc(row, interviews, contacts, media) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    createdAt: new Date(row.created_at).getTime(),
+    title: row.title,
+    neighbourhood: row.neighbourhood || "",
+    status: row.status || "idea",
+    category: row.category || "Exterior",
+    shootDate: row.shoot_date || "",
+    bestTime: row.best_time || "",
+    parking: row.parking || "",
+    permit: row.permit || "n/a",
+    lat: row.lat,
+    lng: row.lng,
+    notes: row.notes || "",
+    contacts: (contacts || []).map((c) => ({ id: c.id, name: c.name || "", role: c.role || "", detail: c.detail || "" })),
+    interviews: (interviews || []).map((i) => ({ id: i.id, subject: i.subject || "", role: i.role || "", status: i.status || "idea" })),
+    footage: (media || []).filter((m) => m.kind === "footage").map((m) => ({ id: m.id, label: m.label || "", notes: m.notes || "" })),
+    photos: (media || []).filter((m) => m.kind === "photo").map((m) => m.url || ""),
+  };
 }
-let db = loadDB();
-function save() { localStorage.setItem(STORE_KEY, JSON.stringify(db)); }
+
+async function loadDB() {
+  // Load projects
+  const { data: projects, error: pErr } = await sb.from("projects").select("*").order("created_at");
+  if (pErr) { console.error("loadDB projects:", pErr); return null; }
+
+  if (!projects.length) {
+    // First run — create a default project
+    const { data: newP, error: npErr } = await sb.from("projects").insert({ name: "Untitled film" }).select().single();
+    if (npErr) { console.error("create default project:", npErr); return null; }
+    return { projects: [{ id: newP.id, name: newP.name, createdAt: new Date(newP.created_at).getTime() }], activeProjectId: newP.id, locations: [] };
+  }
+
+  // Load locations via the view that exposes lat/lng from the geography column
+  const { data: locs, error: lErr } = await sb.from("locations_view")
+    .select("*")
+    .order("created_at");
+  if (lErr) { console.error("loadDB locations:", lErr); return null; }
+
+  // Load child records
+  const locIds = locs.map((l) => l.id);
+  const [ivRes, coRes, meRes] = await Promise.all([
+    sb.from("interviews").select("*").in("location_id", locIds.length ? locIds : [""]),
+    sb.from("contacts").select("*").in("location_id", locIds.length ? locIds : [""]),
+    sb.from("media").select("*").in("location_id", locIds.length ? locIds : [""]),
+  ]);
+
+  const byLoc = (rows, lid) => (rows || []).filter((r) => r.location_id === lid);
+  const locations = locs.map((row) => {
+    row.lat = parseFloat(row.lat);
+    row.lng = parseFloat(row.lng);
+    return rowToLoc(row, byLoc(ivRes.data, row.id), byLoc(coRes.data, row.id), byLoc(meRes.data, row.id));
+  });
+
+  const dbObj = {
+    projects: projects.map((p) => ({ id: p.id, name: p.name, createdAt: new Date(p.created_at).getTime() })),
+    activeProjectId: projects[0].id,
+    locations,
+  };
+  return dbObj;
+}
+
+async function saveLocation(loc) {
+  // Upsert the location row
+  const row = {
+    title: loc.title,
+    project_id: loc.projectId,
+    neighbourhood: loc.neighbourhood,
+    status: loc.status,
+    category: loc.category,
+    shoot_date: loc.shootDate || null,
+    best_time: loc.bestTime || null,
+    parking: loc.parking || null,
+    permit: loc.permit,
+    notes: loc.notes || null,
+    geom: `SRID=4326;POINT(${loc.lng} ${loc.lat})`,
+  };
+
+  let locId = loc.id;
+  if (locId) {
+    // Update existing
+    const { error } = await sb.from("locations").update(row).eq("id", locId);
+    if (error) { console.error("update location:", error); return null; }
+  } else {
+    // Insert new
+    const { data, error } = await sb.from("locations").insert(row).select().single();
+    if (error) { console.error("insert location:", error); return null; }
+    locId = data.id;
+    loc.id = locId;
+    loc.createdAt = new Date(data.created_at).getTime();
+  }
+
+  // Sync child records: delete all then re-insert (simple for a single-user app)
+  await Promise.all([
+    sb.from("interviews").delete().eq("location_id", locId),
+    sb.from("contacts").delete().eq("location_id", locId),
+    sb.from("media").delete().eq("location_id", locId),
+  ]);
+
+  const childInserts = [];
+  if (loc.contacts.length) {
+    childInserts.push(sb.from("contacts").insert(loc.contacts.map((c) => ({ location_id: locId, name: c.name, role: c.role, detail: c.detail }))));
+  }
+  if (loc.interviews.length) {
+    childInserts.push(sb.from("interviews").insert(loc.interviews.map((i) => ({ location_id: locId, subject: i.subject, role: i.role, status: i.status }))));
+  }
+  const mediaRows = [];
+  (loc.footage || []).forEach((f) => mediaRows.push({ location_id: locId, kind: "footage", label: f.label, notes: f.notes }));
+  (loc.photos || []).filter(Boolean).forEach((url) => mediaRows.push({ location_id: locId, kind: "photo", url }));
+  if (mediaRows.length) childInserts.push(sb.from("media").insert(mediaRows));
+
+  await Promise.all(childInserts);
+  return locId;
+}
+
+async function deleteLocation(id) {
+  const { error } = await sb.from("locations").delete().eq("id", id);
+  if (error) console.error("delete location:", error);
+}
+
+async function saveProject(proj) {
+  if (proj._isNew) {
+    const { data, error } = await sb.from("projects").insert({ name: proj.name }).select().single();
+    if (error) { console.error("insert project:", error); return null; }
+    return { id: data.id, name: data.name, createdAt: new Date(data.created_at).getTime() };
+  }
+  return proj;
+}
+
+// Legacy save() kept as a no-op so existing event handlers don't break during init
+function save() {}
+
+let db = { projects: [], activeProjectId: null, locations: [] };
 function activeProject() { return db.projects.find((p) => p.id === db.activeProjectId) || db.projects[0]; }
 function projectLocs() { return db.locations.filter((l) => l.projectId === db.activeProjectId); }
+
+/* ---------- migrate localStorage → Supabase ---------- */
+async function migrateLocalStorage() {
+  const raw = localStorage.getItem(STORE_KEY);
+  if (!raw) return;
+  let old;
+  try { old = JSON.parse(raw); } catch { return; }
+  if (!old.locations || !old.locations.length) { localStorage.removeItem(STORE_KEY); return; }
+
+  console.log(`Migrating ${old.locations.length} location(s) from localStorage → Supabase…`);
+  const projMap = {};
+
+  // Create any localStorage projects that don't already exist in Supabase
+  for (const op of (old.projects || [])) {
+    const existing = db.projects.find((p) => p.name === op.name);
+    if (existing) {
+      projMap[op.id] = existing.id;
+    } else {
+      const { data, error } = await sb.from("projects").insert({ name: op.name }).select().single();
+      if (error) { console.error("migrate project:", error); continue; }
+      const p = { id: data.id, name: data.name, createdAt: new Date(data.created_at).getTime() };
+      db.projects.push(p);
+      projMap[op.id] = p.id;
+    }
+  }
+
+  // Migrate locations
+  for (const loc of old.locations) {
+    loc.projectId = projMap[loc.projectId] || db.activeProjectId;
+    loc.id = null; // force insert
+    await saveLocation(loc);
+    db.locations.push(loc);
+  }
+
+  // Clear localStorage so migration doesn't re-run
+  localStorage.removeItem(STORE_KEY);
+  localStorage.removeItem(V1_KEY);
+  console.log("Migration complete — localStorage cleared.");
+}
 
 let hoods = [];
 const markers = new Map();
@@ -60,27 +229,39 @@ function fitWhenReady() {
 }
 new ResizeObserver(fitWhenReady).observe(map.getContainer());
 
-fetch("data/scarborough.geojson")
-  .then((r) => r.json())
-  .then((geo) => {
-    hoods = geo.features;
-    hoodLayer = L.geoJSON(geo, {
-      style: () => ({ color: "#4ea1ff", weight: 1, fillColor: "#4ea1ff", fillOpacity: 0.05 }),
-      onEachFeature: (f, layer) => {
-        layer.on("mouseover", () => layer.setStyle({ fillOpacity: 0.18, weight: 2 }));
-        layer.on("mouseout", () => hoodLayer.resetStyle(layer));
-        layer.bindTooltip(() => hoodTooltip(f.properties.name), { sticky: true });
-      },
-    }).addTo(map);
-    geo.features.forEach((f) => {
-      const [lng, lat] = f.properties.centroid;
-      L.marker([lat, lng], { interactive: false, icon: L.divIcon({ className: "hood-label", html: f.properties.name }) }).addTo(map);
-    });
-    fitWhenReady();
-    buildHoodFilter();
-    render();
-  })
-  .catch((e) => console.error("Failed to load neighbourhoods:", e));
+// Boot: load geojson + Supabase data in parallel, then render
+(async function boot() {
+  const [geoRes, dbRes] = await Promise.all([
+    fetch("data/scarborough.geojson").then((r) => r.json()),
+    loadDB(),
+  ]);
+
+  // Set up neighbourhoods
+  const geo = geoRes;
+  hoods = geo.features;
+  hoodLayer = L.geoJSON(geo, {
+    style: () => ({ color: "#4ea1ff", weight: 1, fillColor: "#4ea1ff", fillOpacity: 0.05 }),
+    onEachFeature: (f, layer) => {
+      layer.on("mouseover", () => layer.setStyle({ fillOpacity: 0.18, weight: 2 }));
+      layer.on("mouseout", () => hoodLayer.resetStyle(layer));
+      layer.bindTooltip(() => hoodTooltip(f.properties.name), { sticky: true });
+    },
+  }).addTo(map);
+  geo.features.forEach((f) => {
+    const [lng, lat] = f.properties.centroid;
+    L.marker([lat, lng], { interactive: false, icon: L.divIcon({ className: "hood-label", html: f.properties.name }) }).addTo(map);
+  });
+  fitWhenReady();
+  buildHoodFilter();
+
+  // Set up Supabase data
+  if (dbRes) { db = dbRes; }
+
+  // Migrate any existing localStorage data
+  await migrateLocalStorage();
+
+  render();
+})().catch((e) => console.error("Boot failed:", e));
 
 map.on("click", (e) => { const d = blankLoc(); d.lat = e.latlng.lat; d.lng = e.latlng.lng; openDetail(d, true); });
 
@@ -220,18 +401,20 @@ function renderPhotos() {
   editing.photos.filter(Boolean).forEach((u) => { const img = document.createElement("img"); img.src = u; img.onerror = () => (img.style.display = "none"); grid.appendChild(img); });
   wrap.appendChild(grid);
 }
-function saveDetail() {
+async function saveDetail() {
   editing.title = (editing.title || "").trim() || "Untitled";
   // drop empty repeatable rows so blank entries don't count toward chips/exports
   editing.contacts = editing.contacts.filter((c) => c.name || c.role || c.detail);
   editing.interviews = editing.interviews.filter((i) => i.subject || i.role);
   editing.footage = editing.footage.filter((f) => f.label || f.notes);
   editing.photos = editing.photos.filter(Boolean);
-  if (isNewLoc) { editing.projectId = db.activeProjectId; db.locations.push(editing); isNewLoc = false; }
+  if (isNewLoc) { editing.projectId = db.activeProjectId; }
+  await saveLocation(editing);
+  if (isNewLoc) { db.locations.push(editing); isNewLoc = false; }
   else { const i = db.locations.findIndex((l) => l.id === editing.id); if (i >= 0) db.locations[i] = editing; }
-  save(); closeDetail(); render();
+  closeDetail(); render();
 }
-function removeLoc(id) { db.locations = db.locations.filter((l) => l.id !== id); save(); closeDetail(); render(); }
+async function removeLoc(id) { await deleteLocation(id); db.locations = db.locations.filter((l) => l.id !== id); closeDetail(); render(); }
 function closeDetail() { document.getElementById("detail").hidden = true; editing = null; }
 document.getElementById("detail-close").onclick = closeDetail;
 
@@ -348,12 +531,13 @@ function buildHoodFilter() {
 
 /* ---------- controls ---------- */
 ["search", "filter-status", "filter-hood"].forEach((id) => document.getElementById(id).addEventListener("input", render));
-document.getElementById("project-select").onchange = (e) => { db.activeProjectId = e.target.value; save(); fitted = false; render(); };
-document.getElementById("new-project").onclick = () => {
+document.getElementById("project-select").onchange = (e) => { db.activeProjectId = e.target.value; fitted = false; render(); };
+document.getElementById("new-project").onclick = async () => {
   const name = prompt("New project (film / production) name:");
   if (!name) return;
-  const p = { id: rid("prj_"), name: name.trim(), createdAt: Date.now() };
-  db.projects.push(p); db.activeProjectId = p.id; save(); render();
+  const p = await saveProject({ _isNew: true, name: name.trim() });
+  if (!p) return;
+  db.projects.push(p); db.activeProjectId = p.id; render();
 };
 document.getElementById("plan-day").onclick = () => {
   const locs = projectLocs();
