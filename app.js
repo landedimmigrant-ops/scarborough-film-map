@@ -590,12 +590,22 @@ function hoodTooltip(name) { const n = projectLocs().filter((l) => l.neighbourho
    When this becomes a public website, swap to a self-hosted Nominatim or a keyed
    provider (LocationIQ / Mapbox). Browsers can't set User-Agent, but the Referer
    header they send automatically satisfies the policy for occasional requests. */
+// fetch JSON with a hard timeout so a hung request never leaves the UI stuck "loading"
+async function fetchJSON(url, opts = {}, timeoutMs = 8000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, { ...opts, signal: ctrl.signal });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
 async function reverseGeocode(lat, lng) {
   try {
-    const d = await fetch(
+    const d = await fetchJSON(
       `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
       { headers: { "Accept-Language": "en" } }
-    ).then((r) => r.json());
+    );
     const a = d.address || {};
     // prefer the feature's own name (park, building, landmark); else build a street address
     const name = (d.name && d.name.trim())
@@ -603,33 +613,33 @@ async function reverseGeocode(lat, lng) {
       || a.neighbourhood || a.suburb || "";
     // keep the local part of display_name (drop the city/province/country tail)
     const address = (d.display_name || "").split(",").slice(0, 4).join(",").trim();
-    return { name, address };
-  } catch (e) { console.error("reverseGeocode:", e); return { name: "", address: "" }; }
+    return { name, address, failed: false };
+  } catch (e) { console.error("reverseGeocode:", e); return { name: "", address: "", failed: true }; }
 }
 async function searchPlaces(q) {
   // viewbox biases results toward Scarborough: W,N,E,S
   const viewbox = "-79.32,43.86,-79.10,43.68";
   try {
-    const rows = await fetch(
+    const rows = await fetchJSON(
       `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(q)}&viewbox=${viewbox}&bounded=1&limit=6&addressdetails=1`,
       { headers: { "Accept-Language": "en" } }
-    ).then((r) => r.json());
+    );
     return (rows || []).map((r) => ({
       name: r.name || (r.display_name || "").split(",")[0],
       label: r.display_name || "",
       lat: parseFloat(r.lat), lng: parseFloat(r.lon),
     }));
-  } catch (e) { console.error("searchPlaces:", e); return []; }
+  } catch (e) { console.error("searchPlaces:", e); return null; }   // null = lookup failed (vs [] = no matches)
 }
 async function nearbyFeatures(lat, lng) {
   // every named building / park / amenity within ~60 m of the click, nearest first
   const q = `[out:json][timeout:10];(nwr(around:60,${lat},${lng})[name];);out tags center 40;`;
   try {
-    const data = await fetch("https://overpass-api.de/api/interpreter", {
+    const data = await fetchJSON("https://overpass-api.de/api/interpreter", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: "data=" + encodeURIComponent(q),
-    }).then((r) => r.json());
+    }, 12000);
     const seen = new Set();
     return (data.elements || [])
       .map((el) => { const c = el.center || el; return { name: el.tags && el.tags.name, lat: c.lat, lng: c.lon }; })
@@ -637,16 +647,16 @@ async function nearbyFeatures(lat, lng) {
       .map((e) => ({ ...e, d: distKm({ lat, lng }, e) }))
       .sort((a, b) => a.d - b.d)
       .slice(0, 6);
-  } catch (e) { console.error("nearbyFeatures:", e); return []; }
+  } catch (e) { console.error("nearbyFeatures:", e); return null; }   // null = lookup failed (vs [] = none nearby)
 }
 async function fetchNearestWiki(lat, lng) {
-  const geoData = await fetch(
+  const geoData = await fetchJSON(
     `https://en.wikipedia.org/w/api.php?action=query&list=geosearch&gscoord=${lat}|${lng}&gsradius=500&gslimit=5&format=json&origin=*`
-  ).then((r) => r.json());
+  );
   const pages = (geoData?.query?.geosearch) || [];
   if (!pages.length) return null;
   const title = pages[0].title;
-  const sum = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`).then((r) => r.json());
+  const sum = await fetchJSON(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`);
   const extract = sum.extract || "";
   const short = extract.length > 240 ? extract.slice(0, 240).replace(/\s\S*$/, "") + "…" : extract;
   const url = sum.content_urls?.desktop?.page || `https://en.wikipedia.org/wiki/${encodeURIComponent(title)}`;
@@ -717,19 +727,23 @@ function markAt(latlng) {
 }
 async function enrichEditing(lat, lng) {
   const token = ++enrichToken;
+  const titleEl = document.getElementById("f-title");
   const chipsEl = document.getElementById("nearby-chips");
   if (chipsEl) chipsEl.innerHTML = `<span class="nearby-loading">Identifying…</span>`;
   const [geo, near] = await Promise.all([reverseGeocode(lat, lng), nearbyFeatures(lat, lng)]);
   if (token !== enrichToken || !editing) return;  // editor was closed or moved on
   if (!editing.title && geo.name) {               // don't clobber anything the user typed
     editing.title = geo.name;
-    const t = document.getElementById("f-title"); if (t) t.value = geo.name;
+    if (titleEl) titleEl.value = geo.name;
   }
+  // never leave the title stuck on "Identifying…": settle to an actionable prompt
+  if (titleEl && !titleEl.value) titleEl.placeholder = geo.failed ? "Couldn't auto-name — type a name" : "Name this location";
   if (geo.address) {
     editing.address = geo.address;
     const a = document.getElementById("f-address"); if (a) a.value = geo.address;
   }
-  renderNearbyChips(near);
+  if (near === null) { if (chipsEl) chipsEl.innerHTML = `<span class="nearby-loading">Couldn't load nearby places (offline?)</span>`; }
+  else renderNearbyChips(near);   // [] just clears it
 }
 function renderNearbyChips(list) {
   const el = document.getElementById("nearby-chips");
@@ -803,6 +817,7 @@ document.getElementById("sat-toggle").addEventListener("click", () => {
   if (satOn) { map.removeLayer(osmLayer); satLayer.addTo(map); btn.textContent = "🗺 Street map"; }
   else { map.removeLayer(satLayer); osmLayer.addTo(map); btn.textContent = "🛰 Satellite"; }
   btn.classList.toggle("active", satOn);
+  document.body.classList.toggle("sat-on", satOn);   // stronger label halo on imagery (#15)
 });
 
 /* keyboard: Esc closes the open slide-over; Tab is trapped within it */
@@ -832,6 +847,7 @@ placeQ.addEventListener("input", () => {
     placeResults.hidden = false;
     placeResults.innerHTML = `<li class="pr-empty">Searching…</li>`;
     placeList = await searchPlaces(q);
+    if (placeList === null) { placeResults.innerHTML = `<li class="pr-empty">Couldn't search — check your connection.</li>`; placeList = []; return; }
     if (!placeList.length) { placeResults.innerHTML = `<li class="pr-empty">No places found in Scarborough.</li>`; return; }
     placeResults.innerHTML = placeList.map((p, i) => {
       const sub = esc((p.label.split(",").slice(1, 3).join(",")).trim());

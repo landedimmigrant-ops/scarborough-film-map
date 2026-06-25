@@ -134,6 +134,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 .pop .actions { display: flex; gap: 7px; margin-top: 8px; }
 .hood-label { background: none; border: none; box-shadow: none; color: #cdd9e5;
   font-size: 11px; font-weight: 600; text-shadow: 0 1px 3px #000, 0 0 2px #000; pointer-events: none; }
+/* On satellite, a strong dark halo keeps labels legible over bright imagery (#15) */
+.sat-on .hood-label { color: #fff;
+  text-shadow: -1px -1px 2px #000, 1px -1px 2px #000, -1px 1px 2px #000, 1px 1px 2px #000, 0 0 6px #000; }
 
 .mobile-only { display: none; }
 

@@ -28,10 +28,10 @@ Ranked by impact ÷ effort. Status: `proposed` → `accepted` → `done` / `reje
 | 4 | **Strengthen mode feedback on the map (esp. touch).** Explore mode is signalled only by a far bottom-right button + crosshair cursor; its explanation is a hover tooltip (invisible on touch) and on mobile the button is detached from the map. Add a small on-map "Explore mode" pill while active. | Visibility of system status; help & docs | Med | Low–Med | proposed | C2 |
 | 2 | 🔴 **Fix two-column field labels.** `Status / Type / Shoot date / Best light / Permit / Parking` don't get the small-uppercase label style (the `.field > label` direct-child selector skips nested labels), so they look like a different, louder heading than `TITLE / ADDRESS`. | Consistency & standards | Med | Low | ✅ done (2026-06-25) | C1 |
 | 14 | **Visible focus indicators.** Inputs/selects use `outline:none` and signal focus only by a faint accent border; buttons/cards/chips/toggles define no focus style at all. Add a clear `:focus-visible` ring across interactive elements. | Accessibility (WCAG 2.4.7 focus visible) | Med | Low | ✅ done (2026-06-25, with #13) | C7 |
-| 11 | 🔴 **Graceful failure for auto-naming.** On reverse-geocode/Overpass failure or hang the title stays stuck on "📍 Identifying this spot…" with no error and no nudge to type — and there's no fetch timeout, so a hung request never resolves. On failure swap to a "Name this location" placeholder (or a subtle "couldn't auto-name") and add a timeout. | Visibility of system status; error recovery | Med | Low–Med | proposed | C6 |
+| 11 | 🔴 **Graceful failure for auto-naming.** On reverse-geocode/Overpass failure or hang the title stays stuck on "📍 Identifying this spot…" with no error and no nudge to type — and there's no fetch timeout, so a hung request never resolves. On failure swap to a "Name this location" placeholder (or a subtle "couldn't auto-name") and add a timeout. | Visibility of system status; error recovery | Med | Low–Med | ✅ done (2026-06-25) | C6 |
 | 6 | **Clarify the two search boxes.** Map "Find a place to mark" (geocode) vs sidebar "Search locations, people, notes" (filter) differ only by placeholder + position; once you type, the placeholder is gone and nothing says which scope you're in. Add small persistent labels/distinct icons (🔎 place vs filter-funnel) and a clear-on-type affordance. | Recognition rather than recall | Med–Low | Low | ✅ done (2026-06-25) | C3 |
-| 12 | **Distinguish "offline/failed" from "no results."** Place-search shows "No places found in Scarborough" and the nearby chips silently empty on a network failure — indistinguishable from a genuine empty result. Show a retry/offline hint on fetch error. | Help users recognise & recover from errors | Low–Med | Low | proposed | C6 |
-| 15 | **Hood labels need cross-basemap legibility.** `.hood-label` is light text + a thin dark text-shadow tuned for the dark street map; over satellite it holds up in dark/treed areas but loses contrast on bright imagery (rooftops, concrete, water glare), and 30 at once clutter the aerial view. Add a subtle semi-opaque dark pill behind labels (and/or thin by zoom when satellite is on). Status pins are fine — dark ring + saturated fill. | Legibility; aesthetic & minimalist | Low–Med | Low | proposed | C8 |
+| 12 | **Distinguish "offline/failed" from "no results."** Place-search shows "No places found in Scarborough" and the nearby chips silently empty on a network failure — indistinguishable from a genuine empty result. Show a retry/offline hint on fetch error. | Help users recognise & recover from errors | Low–Med | Low | ✅ done (2026-06-25) | C6 |
+| 15 | **Hood labels need cross-basemap legibility.** `.hood-label` is light text + a thin dark text-shadow tuned for the dark street map; over satellite it holds up in dark/treed areas but loses contrast on bright imagery (rooftops, concrete, water glare), and 30 at once clutter the aerial view. Add a subtle semi-opaque dark pill behind labels (and/or thin by zoom when satellite is on). Status pins are fine — dark ring + saturated fill. | Legibility; aesthetic & minimalist | Low–Med | Low | ✅ done (2026-06-25) | C8 |
 | 8 | **Optionally collapse logistics in the editor.** Date / best-light / permit / parking sit above the richer narrative sections; a disclosure ("Logistics ▸") or reorder would shorten data-rich editors and surface title/people faster. Lower priority — sparse editors are only ~1 screen. | Aesthetic & minimalist; progressive disclosure | Low–Med | Med | proposed | C4 |
 
 _Table ordered by impact ÷ effort; the `#` column is a stable id, not the rank._
@@ -48,8 +48,15 @@ empty-state ("No locations match…" + **Clear search & filters** button that re
 field labels now match the small-uppercase style · #6 persistent scope labels on both search boxes
 ("🔍 Filter saved locations" vs "📍 Find a place on the map") + aria-labels.
 
-**Remaining (none High-impact):** #4 on-map mode pill · #11 graceful lookup-failure / timeout ·
-#12 offline-vs-empty messaging · #15 hood-label legibility on satellite · #8 collapse editor logistics.
+**✅ Also shipped 2026-06-25 (robustness + legibility):** #11 graceful lookup-failure — `fetchJSON`
+adds an 8 s timeout (no more stuck "Identifying…"); on failure the title settles to "Couldn't
+auto-name — type a name" and chips show an offline note · #12 search/nearby now distinguish
+offline failure ("Couldn't search — check your connection") from genuine empty results · #15 hood
+labels get a strong dark halo on satellite (`.sat-on`) so they stay legible over bright imagery.
+
+**Remaining (optional polish, none High-impact):** #4 on-map "Explore mode" pill · #8 collapse
+editor logistics behind a disclosure. Both deferred — the tagline (#3) already covers mode clarity,
+and sparse editors are ~1 screen.
 
 ---
 
@@ -339,7 +346,8 @@ to **implement + re-test** the High cluster rather than continue enumerating.
 Most fixes are **Low effort**. The audit has reached diminishing returns; the highest-value next
 step is shipping the High cluster and re-testing, not more discovery.
 
-**Update — 2026-06-25:** the High cluster (#10, #3, #9, #1, #13) + #14 were implemented and
-verified in preview on desktop and mobile (see the ✅ Shipped note under the backlog). 9 lower-
-priority items remain, none High-impact. Suggested next pass when ready: the remaining Low-effort
-batch (#5 empty-state, #7 sticky action bar, #2 field labels, #6 search clarity).
+**Update — 2026-06-25:** implemented and verified (desktop + mobile) in three passes —
+**High cluster** (#10, #3, #9, #1, #13) + #14; **Low-effort batch** (#5, #7, #2, #6); and
+**robustness + legibility** (#11, #12, #15). **13 of 15 items shipped.** Only #4 (mode pill) and
+#8 (collapse logistics) remain — optional polish, intentionally deferred. The app handles offline /
+slow / failed lookups gracefully, is keyboard- and touch-accessible, and reads on both base maps.
