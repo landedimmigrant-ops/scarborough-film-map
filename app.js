@@ -333,6 +333,9 @@ function selectHtml(id, pairs, val) {
 function bindInput(id, fn) { const el = document.getElementById(id); if (el) el.addEventListener("input", (e) => fn(e.target.value)); }
 
 /* ---------- detail editor ---------- */
+// Google Maps link for a location's exact coordinates (drops a pin there; user can then get directions / street view)
+function gmapsUrl(loc) { return `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lng}`; }
+function refreshGmapsLink() { const el = document.getElementById("gmaps-link"); if (el && editing) el.href = gmapsUrl(editing); }
 // Focus management for the slide-over panels (keyboard a11y)
 function captureFocus() { const ae = document.activeElement; if (ae && ae !== document.body && !ae.closest(".panel")) lastFocused = ae; }
 function restoreFocus() { if (lastFocused && document.body.contains(lastFocused)) { try { lastFocused.focus(); } catch (e) {} } }
@@ -350,6 +353,7 @@ function openDetail(source, isNew) {
     <div id="nearby-chips" class="nearby-chips"></div>
     <div class="field"><label>Neighbourhood (auto)</label><input data-hood value="${esc(editing.neighbourhood)}" readonly></div>
     <div class="field"><label>Address (auto)</label><input id="f-address" value="${esc(editing.address)}" placeholder="auto-filled from the map"></div>
+    <a id="gmaps-link" class="ext-link" href="${gmapsUrl(editing)}" target="_blank" rel="noopener">🧭 Open in Google Maps ↗</a>
     <div class="field"><div class="row2">
       <div style="flex:1"><label>Status</label>${selectHtml("f-status", Object.keys(STATUS).map((k) => [k, STATUS[k].label]), editing.status)}</div>
       <div style="flex:1"><label>Type</label>${selectHtml("f-category", CATEGORIES.map((c) => [c, c]), editing.category)}</div>
@@ -715,6 +719,7 @@ function showTempMarker(lat, lng) {
     if (!editing) return;
     editing.lat = ll.lat; editing.lng = ll.lng;
     setHoodField(findHood(ll.lat, ll.lng));
+    refreshGmapsLink();
     enrichEditing(ll.lat, ll.lng);
   });
 }
@@ -764,6 +769,7 @@ function renderNearbyChips(list) {
       const t = document.getElementById("f-title"); if (t) t.value = f.name;
       editing.lat = f.lat; editing.lng = f.lng;          // snap pin to the chosen feature
       setHoodField(findHood(f.lat, f.lng));
+      refreshGmapsLink();
       if (tempMarker) tempMarker.setLatLng([f.lat, f.lng]);
       reverseGeocode(f.lat, f.lng).then((g) => {
         if (!editing) return;
