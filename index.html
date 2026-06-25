@@ -20,7 +20,8 @@
       </header>
 
       <div class="controls">
-        <input id="search" type="search" placeholder="Search locations, people, notes…" autocomplete="off" />
+        <label class="search-label" for="search">🔍 Filter saved locations</label>
+        <input id="search" type="search" placeholder="Search locations, people, notes…" autocomplete="off" aria-label="Filter saved locations" />
         <div class="row">
           <select id="filter-status">
             <option value="">All statuses</option>
@@ -70,7 +71,8 @@
 
     <!-- Map overlay controls -->
     <div id="place-search">
-      <input id="place-q" type="search" placeholder="🔎 Find a place to mark…" autocomplete="off" />
+      <label class="search-label" for="place-q">📍 Find a place on the map</label>
+      <input id="place-q" type="search" placeholder="Search any address or place…" autocomplete="off" aria-label="Find a place on the map to add" />
       <ul id="place-results" hidden></ul>
     </div>
     <button id="sat-toggle" title="Switch between street map and satellite imagery">🛰 Satellite</button>

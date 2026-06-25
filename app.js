@@ -543,9 +543,23 @@ function renderStats() {
   projectLocs().forEach((l) => c[l.status]++);
   document.getElementById("stats").innerHTML = Object.entries(STATUS).map(([k, v]) => `<span class="pill" style="border-left:3px solid ${v.color}"><b>${c[k]}</b> ${v.label}</span>`).join("");
 }
+function clearFilters() {
+  document.getElementById("search").value = "";
+  document.getElementById("filter-status").value = "";
+  document.getElementById("filter-hood").value = "";
+  render();
+}
 function renderList(list) {
   const el = document.getElementById("list");
-  if (!list.length) { el.innerHTML = `<div class="empty">No locations in this project yet.<br>Click anywhere on the map to add your first one.</div>`; return; }
+  if (!list.length) {
+    if (!projectLocs().length) {
+      el.innerHTML = `<div class="empty">No locations in this project yet.<br>Click anywhere on the map to add your first one.</div>`;
+    } else {
+      el.innerHTML = `<div class="empty">No locations match your search or filters.<br><button class="btn ghost" id="clear-filters" style="flex:none;margin-top:10px">Clear search &amp; filters</button></div>`;
+      const cf = document.getElementById("clear-filters"); if (cf) cf.onclick = clearFilters;
+    }
+    return;
+  }
   el.innerHTML = "";
   list.slice().sort((a, b) => b.createdAt - a.createdAt).forEach((loc) => {
     const chips = [];
