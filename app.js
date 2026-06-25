@@ -231,22 +231,35 @@ new ResizeObserver(fitWhenReady).observe(map.getContainer());
 
 // Boot: load geojson + Supabase data in parallel, then render
 (async function boot() {
-  const [geoRes, dbRes] = await Promise.all([
+  const [geoRes, boundaryRes, dbRes] = await Promise.all([
     fetch("data/scarborough.geojson").then((r) => r.json()),
+    fetch("data/scarborough-boundary.geojson").then((r) => r.json()),
     loadDB(),
   ]);
 
   // Set up neighbourhoods
   const geo = geoRes;
   hoods = geo.features;
+  // Internal neighbourhood boundaries — subtle fill, visible dividing lines
   hoodLayer = L.geoJSON(geo, {
-    style: () => ({ color: "#4ea1ff", weight: 1, fillColor: "#4ea1ff", fillOpacity: 0.05 }),
+    style: () => ({ color: "#4ea1ff", weight: 1.5, opacity: 0.6, fillColor: "#4ea1ff", fillOpacity: 0.04 }),
     onEachFeature: (f, layer) => {
-      layer.on("mouseover", () => layer.setStyle({ fillOpacity: 0.18, weight: 2 }));
+      layer.on("mouseover", () => layer.setStyle({ fillOpacity: 0.15, weight: 2.5, opacity: 1 }));
       layer.on("mouseout", () => hoodLayer.resetStyle(layer));
       layer.bindTooltip(() => hoodTooltip(f.properties.name), { sticky: true });
     },
   }).addTo(map);
+
+  // Outer Scarborough boundary — bold outline so the whole area reads clearly
+  L.geoJSON(boundaryRes, {
+    style: () => ({ color: "#ffffff", weight: 4, opacity: 0.25, fill: false }),
+    interactive: false,
+  }).addTo(map);
+  L.geoJSON(boundaryRes, {
+    style: () => ({ color: "#4ea1ff", weight: 2.5, opacity: 0.9, fill: false, dashArray: null }),
+    interactive: false,
+  }).addTo(map);
+
   geo.features.forEach((f) => {
     const [lng, lat] = f.properties.centroid;
     L.marker([lat, lng], { interactive: false, icon: L.divIcon({ className: "hood-label", html: f.properties.name }) }).addTo(map);
