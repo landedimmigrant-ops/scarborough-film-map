@@ -35,8 +35,13 @@ Owner: Prem (documentary filmmaker). Single-user for now.
 
 ### Two map modes (interaction model)
 - **Mark mode (default):** click anywhere → drop + auto-name a pin. Drag the pin to fine-tune (re-identifies on drop).
-- **Explore mode (🔍 toggle):** click → neighbourhood blurb + nearest Wikipedia landmark. The hood polygons no longer
-  intercept clicks (a click handler there used to block pin-dropping); `findHood(lat,lng)` derives the hood from raw coords.
+- **Click a neighbourhood name** (the centroid label) → its summary popup (blurb + shoot count + Wikipedia), in
+  either mode. Only the visible label text is clickable (`.hl-in`, `pointer-events:auto`, centred via `translate(-50%,-50%)`);
+  the surrounding label box is `pointer-events:none` so map clicks pass through and still drop pins. Label clicks pass the
+  known name to `exploreAt(latlng, knownHood)` — a thin lakeside hood's centroid can fall outside its own polygon, so
+  `findHood` on the centroid would wrongly say "Outside Scarborough".
+- **Explore mode (🔍 toggle):** click *anywhere* → neighbourhood blurb + nearest Wikipedia landmark (derives the hood
+  from raw coords via `findHood`). The hood polygons don't intercept clicks (a click handler there used to block pin-dropping).
 - The sidebar tagline reflects the active mode (it stops saying "add a location" while in explore mode).
 
 ### Usability & accessibility (audit in `docs/usability-log.md`)

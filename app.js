@@ -272,7 +272,11 @@ new ResizeObserver(fitWhenReady).observe(map.getContainer());
 
   geo.features.forEach((f) => {
     const [lng, lat] = f.properties.centroid;
-    L.marker([lat, lng], { interactive: false, icon: L.divIcon({ className: "hood-label", html: f.properties.name }) }).addTo(map);
+    const lbl = L.marker([lat, lng], {
+      interactive: true,
+      icon: L.divIcon({ className: "hood-label", html: `<span class="hl-in">${f.properties.name}</span>`, iconSize: null }),
+    }).addTo(map);
+    lbl.on("click", (e) => { L.DomEvent.stopPropagation(e); exploreAt({ lat, lng }, f.properties.name); }); // click a name → its summary
   });
   fitWhenReady();
   buildHoodFilter();
@@ -665,9 +669,10 @@ async function fetchNearestWiki(lat, lng) {
 }
 
 /* ---------- explore mode: neighbourhood blurb + nearest Wikipedia landmark ---------- */
-async function exploreAt(latlng) {
+async function exploreAt(latlng, knownHood) {
   const { lat, lng } = latlng;
-  const hood = findHood(lat, lng);
+  // label clicks pass the known name (a centroid can fall outside its own polygon, e.g. thin lakeside hoods)
+  const hood = knownHood || findHood(lat, lng);
   const blurb = hoodBlurbs[hood] || "";
   const count = projectLocs().filter((l) => l.neighbourhood === hood).length;
   const pop = L.popup({ maxWidth: 320 }).setLatLng(latlng)
