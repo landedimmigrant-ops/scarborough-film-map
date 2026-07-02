@@ -25,7 +25,7 @@ Ranked by impact ÷ effort. Status: `proposed` → `accepted` → `done` / `reje
 | 13 | 🔴 **Keyboard-operable list + panels.** List cards are `<div>` (tabIndex −1, no role) so keyboard users can't open a location; the card-delete is a `<span>`; opening the editor leaves focus on `<body>` (no move, no trap); and **Esc doesn't close** the editor/planner. Make cards real buttons, move/trap/restore focus on open/close, add Esc-to-close. | Accessibility; flexibility & efficiency | **High** | Med | ✅ done (2026-06-25) | C7 |
 | 5 | 🔴 **Context-aware empty-list message.** The list shows "No locations in this project yet — add your first one" whenever a filter/search excludes everything, even though the stats bar + footer still say "5 locations". Looks like data loss. Show "No locations match your search/filters" + a **Clear** button instead, and only show the true empty state when the project really is empty. | Visibility of system status; error recovery | Med–High | Low | ✅ done (2026-06-25) | C3 |
 | 7 | 🔴 **Sticky editor action bar.** Save / Delete / Plan-day sit at the bottom of a ~1.1-screen panel (offset ~877px vs 762–810px visible), so the primary action is below the fold even for a one-field edit — and further as contacts/interviews/footage grow. Pin the action bar to the bottom of the panel. | Efficiency of use; primary action always reachable | Med–High | Low | ✅ done (2026-06-25) | C4 |
-| 4 | **Strengthen mode feedback on the map (esp. touch).** Explore mode is signalled only by a far bottom-right button + crosshair cursor; its explanation is a hover tooltip (invisible on touch) and on mobile the button is detached from the map. Add a small on-map "Explore mode" pill while active. | Visibility of system status; help & docs | Med | Low–Med | proposed | C2 |
+| 4 | **Strengthen mode feedback on the map (esp. touch).** Explore mode is signalled only by a far bottom-right button + crosshair cursor; its explanation is a hover tooltip (invisible on touch) and on mobile the button is detached from the map. Add a small on-map "Explore mode" pill while active. | Visibility of system status; help & docs | Med | Low–Med | ✅ done (2026-07-01) | C2 |
 | 2 | 🔴 **Fix two-column field labels.** `Status / Type / Shoot date / Best light / Permit / Parking` don't get the small-uppercase label style (the `.field > label` direct-child selector skips nested labels), so they look like a different, louder heading than `TITLE / ADDRESS`. | Consistency & standards | Med | Low | ✅ done (2026-06-25) | C1 |
 | 14 | **Visible focus indicators.** Inputs/selects use `outline:none` and signal focus only by a faint accent border; buttons/cards/chips/toggles define no focus style at all. Add a clear `:focus-visible` ring across interactive elements. | Accessibility (WCAG 2.4.7 focus visible) | Med | Low | ✅ done (2026-06-25, with #13) | C7 |
 | 11 | 🔴 **Graceful failure for auto-naming.** On reverse-geocode/Overpass failure or hang the title stays stuck on "📍 Identifying this spot…" with no error and no nudge to type — and there's no fetch timeout, so a hung request never resolves. On failure swap to a "Name this location" placeholder (or a subtle "couldn't auto-name") and add a timeout. | Visibility of system status; error recovery | Med | Low–Med | ✅ done (2026-06-25) | C6 |
@@ -33,6 +33,10 @@ Ranked by impact ÷ effort. Status: `proposed` → `accepted` → `done` / `reje
 | 12 | **Distinguish "offline/failed" from "no results."** Place-search shows "No places found in Scarborough" and the nearby chips silently empty on a network failure — indistinguishable from a genuine empty result. Show a retry/offline hint on fetch error. | Help users recognise & recover from errors | Low–Med | Low | ✅ done (2026-06-25) | C6 |
 | 15 | **Hood labels need cross-basemap legibility.** `.hood-label` is light text + a thin dark text-shadow tuned for the dark street map; over satellite it holds up in dark/treed areas but loses contrast on bright imagery (rooftops, concrete, water glare), and 30 at once clutter the aerial view. Add a subtle semi-opaque dark pill behind labels (and/or thin by zoom when satellite is on). Status pins are fine — dark ring + saturated fill. | Legibility; aesthetic & minimalist | Low–Med | Low | ✅ done (2026-06-25) | C8 |
 | 8 | **Optionally collapse logistics in the editor.** Date / best-light / permit / parking sit above the richer narrative sections; a disclosure ("Logistics ▸") or reorder would shorten data-rich editors and surface title/people faster. Lower priority — sparse editors are only ~1 screen. | Aesthetic & minimalist; progressive disclosure | Low–Med | Med | proposed | C4 |
+| 16 | 🔴 **Boot failure masquerades as an empty project.** If Supabase fails to load, the list shows "No locations in this project yet — add your first one" (the same illusion #5 fixed for filters), and there's no loading state at all during boot. Show "Loading your locations…" at startup and an error + Retry on load failure; footer count shows "—" instead of a false "0 locations". | Visibility of system status; error recovery | **High** | Low | ✅ done (2026-07-01) | C9 |
+| 17 | 🔴 **Save/delete failures are silent (cloud data loss).** `saveDetail` ignored `saveLocation` returning null: the panel closed, the pin appeared locally, and the edit vanished on reload. Double-clicking Save could insert duplicates, and "Plan day" raced the save (broken for brand-new pins). Now: Save disables to "Saving…" while in flight, failure alerts and keeps the editor open with edits intact, delete failure alerts and keeps the location, Plan-day awaits the save and works from new pins. | Error prevention; honest system status | **High** | Low–Med | ✅ done (2026-07-01) | C9 |
+| 18 | 🔴 **Unsaved edits discard silently.** Esc, the ✕ close, opening another card, opening the planner, or clicking the map to mark a new pin all threw away typed edits with no warning. Now the editor tracks real user input (typed fields, added/removed rows, chip picks — not programmatic auto-fill) and asks "Discard unsaved changes?" before closing; declining keeps the editor open and blocks the new action. | Error prevention (data loss) | **High** | Med | ✅ done (2026-07-01) | C9 |
+| 19 | **Shoot-date chip on list cards.** Cards showed people/footage/permit chips but not the shoot date — the single most scheduling-relevant fact for a scouting list. Cards now show 🗓 YYYY-MM-DD when a date is set. | Recognition rather than recall; use-case fit | Med | Low | ✅ done (2026-07-01) | C9 |
 
 _Table ordered by impact ÷ effort; the `#` column is a stable id, not the rank._
 
@@ -54,9 +58,17 @@ auto-name — type a name" and chips show an offline note · #12 search/nearby n
 offline failure ("Couldn't search — check your connection") from genuine empty results · #15 hood
 labels get a strong dark halo on satellite (`.sat-on`) so they stay legible over bright imagery.
 
-**Remaining (optional polish, none High-impact):** #4 on-map "Explore mode" pill · #8 collapse
-editor logistics behind a disclosure. Both deferred — the tagline (#3) already covers mode clarity,
-and sparse editors are ~1 screen.
+**✅ Shipped 2026-07-01 (Cycle 9 — data honesty & edit safety, verified desktop + mobile):**
+#16 boot honesty (startup "Loading your locations…", load-failure error + ↻ Retry, honest footer
+count) · #17 save/delete failure honesty (Save → "Saving…" with double-submit guard; failures
+alert and keep the editor open with edits intact; "Plan day" now awaits the save so it works from
+brand-new pins) · #18 unsaved-edits guard ("Discard unsaved changes?" on Esc/✕/card-switch/planner/
+map-click; only real user input marks the editor dirty, so auto-named pins still close silently) ·
+#4 on-map "Explore mode" pill (docked above the map toggles on both layouts) · #19 🗓 shoot-date
+chips on list cards.
+
+**Remaining (optional polish, none High-impact):** #8 collapse editor logistics behind a
+disclosure. Deferred — sparse editors are ~1 screen.
 
 ---
 
@@ -71,6 +83,7 @@ So each cycle has a focused target. Pulled from here, newest findings push new i
 - [x] **C6 — Empty/slow states.** ✅ done (Cycle 6) — explore degrades gracefully (local blurb), but auto-naming fails silently (stuck "Identifying…", no timeout) and search/chips can't tell offline from empty → backlog #11, #12.
 - [x] **C7 — Keyboard / focus order (desktop a11y).** ✅ done (Cycle 7) — list cards aren't keyboard-operable, no focus move/trap into panels, Esc doesn't close, weak focus rings → backlog #13, #14.
 - [x] **C8 — Colour/status legibility on satellite.** ✅ done (Cycle 8) — pins hold up (dark ring), but hood labels lose contrast on bright imagery + clutter → backlog #15.
+- [x] **C9 — Data honesty & edit safety (code-path audit).** ✅ done (Cycle 9) — boot failure looked like an empty project, save/delete failed silently (+ double-save duplicates, Plan-day race), and unsaved edits discarded without warning → backlog #16–#18, all fixed same cycle; #4 pill + #19 date chips shipped alongside.
 
 **⚠️ Queue exhausted after C8.** The discovery phase has covered: mobile layout, mode clarity,
 search scoping, editor density, touch targets, error/empty states, keyboard a11y, and satellite
@@ -351,3 +364,12 @@ step is shipping the High cluster and re-testing, not more discovery.
 **robustness + legibility** (#11, #12, #15). **13 of 15 items shipped.** Only #4 (mode pill) and
 #8 (collapse logistics) remain — optional polish, intentionally deferred. The app handles offline /
 slow / failed lookups gracefully, is keyboard- and touch-accessible, and reads on both base maps.
+
+**Update — 2026-07-01 (Cycle 9):** discovery reopened on the recommended "data honesty" angle, this
+time by auditing code paths rather than screens — and it found the three biggest remaining data-loss
+traps: boot failure masquerading as an empty project (#16), silent save/delete failures against
+Supabase (#17), and unsaved edits discarding without warning (#18). All three fixed and verified the
+same cycle (simulated failure/decline/accept paths in the preview, desktop + mobile), plus #4 (explore
+pill) and #19 (date chips). **18 of 19 items shipped; only #8 remains.** Next discovery candidates:
+multi-project switching, export formats (shot-list/CSV), performance with 100+ pins, first-run
+onboarding.

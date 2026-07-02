@@ -153,7 +153,8 @@ async function saveLocation(loc) {
 
 async function deleteLocation(id) {
   const { error } = await sb.from("locations").delete().eq("id", id);
-  if (error) console.error("delete location:", error);
+  if (error) { console.error("delete location:", error); return false; }
+  return true;
 }
 
 async function saveProject(proj) {
@@ -215,6 +216,7 @@ let hoods = [];
 const markers = new Map();
 let editing = null, isNewLoc = false, plannerAnchor = null, planCircle = null;
 let hoodBlurbs = {}, exploreMode = false, tempMarker = null, enrichToken = 0, lastFocused = null;
+let dirtyEdit = false, dbLoadFailed = false;
 
 /* ---------- map ---------- */
 const map = L.map("map", { zoomControl: true }).setView([43.773, -79.233], 12);
@@ -283,12 +285,21 @@ new ResizeObserver(fitWhenReady).observe(map.getContainer());
 
   // Set up Supabase data
   if (dbRes) { db = dbRes; }
+  else { dbLoadFailed = true; }   // renderList shows a retry state instead of a false "no locations yet"
 
   // Migrate any existing localStorage data
   await migrateLocalStorage();
 
   render();
-})().catch((e) => console.error("Boot failed:", e));
+})().catch((e) => { console.error("Boot failed:", e); showLoadError(); });
+
+function showLoadError() {
+  document.getElementById("count").textContent = "—";
+  document.getElementById("list").innerHTML =
+    `<div class="empty">Couldn't load your locations — check your connection.<br><button class="btn ghost" id="retry-load" style="flex:none;margin-top:10px">↻ Retry</button></div>`;
+  const rb = document.getElementById("retry-load");
+  if (rb) rb.onclick = () => location.reload();
+}
 
 map.on("click", (e) => {
   if (exploreMode) { exploreAt(e.latlng); return; }   // explore: show info about the place
@@ -341,6 +352,7 @@ function captureFocus() { const ae = document.activeElement; if (ae && ae !== do
 function restoreFocus() { if (lastFocused && document.body.contains(lastFocused)) { try { lastFocused.focus(); } catch (e) {} } }
 
 function openDetail(source, isNew) {
+  if (!closeDetail()) return false;   // an open editor with unsaved edits asks before being replaced
   captureFocus();
   closePlanner();
   clearTempMarker();
@@ -394,18 +406,23 @@ function openDetail(source, isNew) {
   bindInput("f-notes", (v) => (editing.notes = v));
   renderContacts(); renderInterviews(); renderFootage(); renderPhotos();
 
-  document.getElementById("add-contact").onclick = () => { editing.contacts.push({ name: "", role: "", detail: "" }); renderContacts(); };
-  document.getElementById("add-interview").onclick = () => { editing.interviews.push({ subject: "", role: "", status: "idea" }); renderInterviews(); };
-  document.getElementById("add-footage").onclick = () => { editing.footage.push({ label: "", notes: "" }); renderFootage(); };
-  document.getElementById("add-photo").onclick = () => { editing.photos.push(""); renderPhotos(); };
+  document.getElementById("add-contact").onclick = () => { dirtyEdit = true; editing.contacts.push({ name: "", role: "", detail: "" }); renderContacts(); };
+  document.getElementById("add-interview").onclick = () => { dirtyEdit = true; editing.interviews.push({ subject: "", role: "", status: "idea" }); renderInterviews(); };
+  document.getElementById("add-footage").onclick = () => { dirtyEdit = true; editing.footage.push({ label: "", notes: "" }); renderFootage(); };
+  document.getElementById("add-photo").onclick = () => { dirtyEdit = true; editing.photos.push(""); renderPhotos(); };
   document.getElementById("d-save").onclick = saveDetail;
-  document.getElementById("d-plan").onclick = () => { saveDetail(); openPlanner(db.locations.find((l) => l.id === editing.id)); };
+  document.getElementById("d-plan").onclick = async () => {
+    const savedId = await saveDetail();   // wait for the save — a brand-new pin gets its id here
+    if (savedId) openPlanner(db.locations.find((l) => l.id === savedId));
+  };
   const del = document.getElementById("d-delete");
   if (del) del.onclick = () => removeLoc(editing.id);
 
   const panel = document.getElementById("detail");
   panel.hidden = false;
   panel.focus();   // move focus into the dialog for keyboard/screen-reader users
+  dirtyEdit = false;   // enrich/auto-fill sets values programmatically; only real user input marks it dirty
+  return true;
 }
 function repeatRow(fields, item, onRemove) {
   const row = document.createElement("div");
@@ -426,7 +443,7 @@ function fillRepeat(containerId, arr, emptyMsg, fields) {
   const wrap = document.getElementById(containerId);
   wrap.innerHTML = "";
   if (!arr.length) { wrap.innerHTML = `<div class="empty-mini">${emptyMsg}</div>`; return; }
-  arr.forEach((item, i) => wrap.appendChild(repeatRow(fields, item, () => { arr.splice(i, 1); fillRepeat(containerId, arr, emptyMsg, fields); })));
+  arr.forEach((item, i) => wrap.appendChild(repeatRow(fields, item, () => { dirtyEdit = true; arr.splice(i, 1); fillRepeat(containerId, arr, emptyMsg, fields); })));
 }
 function renderContacts() { fillRepeat("contacts", editing.contacts, "No contacts yet.", [{ k: "name", ph: "Name", flex: "1.2" }, { k: "role", ph: "Role", flex: "1" }, { k: "detail", ph: "Phone / email", flex: "1.3" }]); }
 function renderInterviews() { fillRepeat("interviews", editing.interviews, "No interviews logged.", [{ k: "subject", ph: "Subject / name", flex: "1.4" }, { k: "role", ph: "Role", flex: "1" }, { k: "status", options: INTERVIEW_STATUS, flex: "1" }]); }
@@ -439,7 +456,7 @@ function renderPhotos() {
     const row = document.createElement("div"); row.className = "repeat-row";
     const inp = document.createElement("input"); inp.value = url; inp.placeholder = "https://…image.jpg";
     inp.addEventListener("input", (e) => (editing.photos[i] = e.target.value));
-    const rm = document.createElement("button"); rm.className = "rm"; rm.textContent = "✕"; rm.onclick = () => { editing.photos.splice(i, 1); renderPhotos(); };
+    const rm = document.createElement("button"); rm.className = "rm"; rm.textContent = "✕"; rm.onclick = () => { dirtyEdit = true; editing.photos.splice(i, 1); renderPhotos(); };
     row.append(inp, rm); wrap.appendChild(row);
   });
   const grid = document.createElement("div"); grid.className = "photo-grid";
@@ -447,6 +464,8 @@ function renderPhotos() {
   wrap.appendChild(grid);
 }
 async function saveDetail() {
+  const btn = document.getElementById("d-save");
+  if (btn && btn.disabled) return;   // a save is already in flight — no double-insert
   editing.title = (editing.title || "").trim() || "Untitled";
   // drop empty repeatable rows so blank entries don't count toward chips/exports
   editing.contacts = editing.contacts.filter((c) => c.name || c.role || c.detail);
@@ -454,24 +473,41 @@ async function saveDetail() {
   editing.footage = editing.footage.filter((f) => f.label || f.notes);
   editing.photos = editing.photos.filter(Boolean);
   if (isNewLoc) { editing.projectId = db.activeProjectId; }
-  await saveLocation(editing);
+  if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+  const locId = await saveLocation(editing);
+  if (!locId) {   // the cloud write failed — keep the editor open so nothing is lost
+    if (btn) { btn.disabled = false; btn.textContent = "Save"; }
+    alert("Couldn't save — check your connection and try again. Your edits are still here.");
+    return;
+  }
   if (isNewLoc) { db.locations.push(editing); isNewLoc = false; }
   else { const i = db.locations.findIndex((l) => l.id === editing.id); if (i >= 0) db.locations[i] = editing; }
-  closeDetail(); render();
+  closeDetail(true); render();
+  return locId;
 }
 async function removeLoc(id) {
   const loc = db.locations.find((l) => l.id === id);
   if (!confirm(`Delete ${loc && loc.title ? `“${loc.title}”` : "this location"}? This can't be undone.`)) return;
-  await deleteLocation(id); db.locations = db.locations.filter((l) => l.id !== id); closeDetail(); render();
+  if (!(await deleteLocation(id))) { alert("Couldn't delete — check your connection and try again."); return; }
+  db.locations = db.locations.filter((l) => l.id !== id); closeDetail(true); render();
 }
-function closeDetail() { document.getElementById("detail").hidden = true; editing = null; clearTempMarker(); restoreFocus(); }
-document.getElementById("detail-close").onclick = closeDetail;
+function closeDetail(force) {
+  const panel = document.getElementById("detail");
+  if (panel.hidden) return true;
+  if (!force && dirtyEdit && !confirm("Discard unsaved changes to this location?")) return false;
+  panel.hidden = true; editing = null; dirtyEdit = false; clearTempMarker(); restoreFocus();
+  return true;
+}
+document.getElementById("detail-close").onclick = () => closeDetail();
+// any real keystroke/selection in the editor marks it dirty (programmatic .value writes don't fire input)
+document.getElementById("detail-body").addEventListener("input", () => { dirtyEdit = true; });
 
 /* ---------- shoot-day planner ---------- */
 function openPlanner(anchor) {
   if (!anchor) return;
+  if (!closeDetail()) return;   // don't silently discard unsaved edits under the planner
   captureFocus();
-  closeDetail(); plannerAnchor = anchor;
+  plannerAnchor = anchor;
   const panel = document.getElementById("planner");
   panel.hidden = false;
   renderPlanner(2);
@@ -540,7 +576,7 @@ function render() {
   const list = filtered();
   drawMarkers(list); renderStats(); renderList(list);
   const n = projectLocs().length;
-  document.getElementById("count").textContent = `${n} location${n === 1 ? "" : "s"}`;
+  document.getElementById("count").textContent = (dbLoadFailed && !n) ? "—" : `${n} location${n === 1 ? "" : "s"}`;
 }
 function renderProjects() {
   const sel = document.getElementById("project-select"); sel.innerHTML = "";
@@ -560,6 +596,7 @@ function clearFilters() {
 function renderList(list) {
   const el = document.getElementById("list");
   if (!list.length) {
+    if (dbLoadFailed && !projectLocs().length) { showLoadError(); return; }
     if (!projectLocs().length) {
       el.innerHTML = `<div class="empty">No locations in this project yet.<br>Click anywhere on the map to add your first one.</div>`;
     } else {
@@ -571,6 +608,7 @@ function renderList(list) {
   el.innerHTML = "";
   list.slice().sort((a, b) => b.createdAt - a.createdAt).forEach((loc) => {
     const chips = [];
+    if (loc.shootDate) chips.push(`🗓 ${esc(loc.shootDate)}`);
     if (loc.interviews?.length) chips.push(`🎤 ${loc.interviews.length}`);
     if (loc.footage?.length) chips.push(`🎬 ${loc.footage.length}`);
     if (loc.contacts?.length) chips.push(`👤 ${loc.contacts.length}`);
@@ -585,7 +623,7 @@ function renderList(list) {
       <div class="t">${esc(loc.title)} <span class="badge ${loc.status}">${STATUS[loc.status].label}</span></div>
       <div class="meta">📍 ${esc(loc.neighbourhood)} · ${esc(loc.category)} <button type="button" class="del" title="Delete" aria-label="Delete ${esc(loc.title)}">✕</button></div>
       ${chips.length ? `<div class="chips">${chips.map((c) => `<span class="chip">${c}</span>`).join("")}</div>` : ""}`;
-    const open = () => { map.flyTo([loc.lat, loc.lng], 15, { duration: 0.6 }); openDetail(loc, false); };
+    const open = () => { if (!openDetail(loc, false)) return; map.flyTo([loc.lat, loc.lng], 15, { duration: 0.6 }); };
     card.onclick = (e) => { if (e.target.closest(".del")) { removeLoc(loc.id); return; } open(); };
     card.onkeydown = (e) => { if (e.target === card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); open(); } };
     el.appendChild(card);
@@ -731,7 +769,7 @@ function setHoodField(name) {
 function markAt(latlng) {
   const d = blankLoc();
   d.lat = latlng.lat; d.lng = latlng.lng;
-  openDetail(d, true);                       // opens immediately so it feels instant
+  if (!openDetail(d, true)) return;          // user kept their unsaved edits — don't touch the open editor
   showTempMarker(latlng.lat, latlng.lng);    // visible, draggable pin
   enrichEditing(latlng.lat, latlng.lng);     // fills title + address + nearby chips
 }
@@ -765,6 +803,7 @@ function renderNearbyChips(list) {
     btn.onclick = () => {
       const f = list[+btn.dataset.i];
       if (!editing) return;
+      dirtyEdit = true;   // picking a chip is deliberate work worth guarding
       editing.title = f.name;
       const t = document.getElementById("f-title"); if (t) t.value = f.name;
       editing.lat = f.lat; editing.lng = f.lng;          // snap pin to the chosen feature
@@ -814,6 +853,7 @@ document.getElementById("explore-toggle").addEventListener("click", () => {
   const btn = document.getElementById("explore-toggle");
   btn.classList.toggle("active", exploreMode);
   btn.textContent = exploreMode ? "✕ Exit explore" : "🔍 What's here?";
+  document.getElementById("mode-pill").hidden = !exploreMode;   // on-map signal, visible on touch too (#4)
   map.getContainer().style.cursor = exploreMode ? "crosshair" : "";
   const tag = document.querySelector(".tagline");
   if (tag) tag.textContent = exploreMode

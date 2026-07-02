@@ -39,7 +39,7 @@
       </div>
 
       <div class="stats" id="stats"></div>
-      <div id="list" class="list"></div>
+      <div id="list" class="list"><div class="empty">Loading your locations…</div></div>
 
       <footer class="side-foot">
         <button id="export" class="btn ghost" title="Download this project as JSON">⭳ Export</button>
@@ -77,6 +77,7 @@
     </div>
     <button id="sat-toggle" title="Switch between street map and satellite imagery">🛰 Satellite</button>
     <button id="explore-toggle" title="Click anywhere on the map to learn about the neighbourhood and nearby landmarks">🔍 What's here?</button>
+    <div id="mode-pill" hidden>🔍 Explore mode — click the map for info</div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

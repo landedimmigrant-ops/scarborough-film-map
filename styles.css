@@ -158,6 +158,15 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 #explore-toggle:hover, #sat-toggle:hover { border-color: var(--accent); }
 #explore-toggle.active, #sat-toggle.active { background: var(--accent); border-color: var(--accent); color: #0c1117; font-weight: 600; }
 
+/* #4 — on-map "Explore mode" pill: a visible mode signal that works on touch (no hover, no cursor) */
+#mode-pill {
+  position: absolute; right: 10px; bottom: 130px; z-index: 600;
+  background: var(--accent); color: #0c1117; font-weight: 600; font-size: 12px;
+  padding: 6px 12px; border-radius: 999px; box-shadow: 0 2px 10px rgba(0,0,0,.45);
+  pointer-events: none; white-space: nowrap;
+}
+#mode-pill[hidden] { display: none; }
+
 /* Place search — floating top-right over the map */
 #place-search { position: absolute; top: 10px; right: 10px; z-index: 600; width: 270px; max-width: calc(100% - 20px); }
 #place-search input { box-shadow: 0 2px 10px rgba(0,0,0,.45); }
@@ -220,4 +229,5 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
   #explore-toggle, #sat-toggle { right: auto; left: 10px; }
   #explore-toggle { bottom: calc(45vh + 10px); }
   #sat-toggle { bottom: calc(45vh + 62px); }
+  #mode-pill { right: auto; left: 10px; bottom: calc(45vh + 114px); }
 }

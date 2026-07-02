@@ -49,8 +49,14 @@ An 8-cycle heuristic audit produced a prioritized backlog in [`docs/usability-lo
 **Shipped 2026-06-25:** delete now asks for confirmation (`removeLoc`); list cards are keyboard-operable
 (`role=button`, Enter/Space) and the slide-overs are dialogs with focus move/trap/restore + **Esc-to-close**
 (see the `keydown` handler + `captureFocus`/`restoreFocus`); `:focus-visible` rings; on mobile, tap targets are
-≥44px and the map toggles dock into the map band instead of floating over the list. Remaining items (none
-High-impact) are tracked in the log.
+≥44px and the map toggles dock into the map band instead of floating over the list.
+**Shipped 2026-07-01 (Cycle 9 — data honesty & edit safety):** startup shows "Loading your locations…"
+and a Supabase load failure shows an error + ↻ Retry (never a false "no locations yet"); Save disables
+to "Saving…" and a failed save/delete alerts and keeps the editor open (`saveDetail`/`removeLoc` check
+the Supabase result); the `dirtyEdit` flag guards unsaved edits with a discard confirm on Esc / ✕ /
+card-switch / planner / map-click (only real user input marks it dirty — programmatic auto-fill doesn't);
+an on-map "Explore mode" pill (`#mode-pill`) shows while explore is active; list cards show a 🗓
+shoot-date chip. Only backlog #8 (collapse editor logistics) remains — see the log.
 
 ### What's next
 - [ ] Offline PWA (installable, works without signal on your phone in the field)
