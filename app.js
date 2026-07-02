@@ -985,3 +985,11 @@ placeQ.addEventListener("input", () => {
 document.addEventListener("click", (e) => {
   if (!document.getElementById("place-search").contains(e.target)) placeResults.hidden = true;
 });
+
+/* ---------- PWA: offline field use (see sw.js for the caching strategies) ---------- */
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js", { updateViaCache: "none" })
+      .catch((e) => console.error("SW registration failed:", e));
+  });
+}

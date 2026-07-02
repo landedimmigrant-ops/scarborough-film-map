@@ -1,0 +1,15 @@
+{
+  "name": "Scarborough Film Map",
+  "short_name": "Film Map",
+  "description": "Documentary location scouting map for Scarborough — pins, shoot days, interviews and logistics.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f1419",
+  "theme_color": "#0f1419",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

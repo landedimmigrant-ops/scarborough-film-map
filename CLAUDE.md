@@ -68,7 +68,10 @@ Markdown scene list grouped by neighbourhood (status, shoot date, logistics, add
 contacts, footage, notes), which is the "script-writing export" roadmap item.
 
 ### What's next
-- [ ] Offline PWA (installable, works without signal on your phone in the field)
+- [x] Offline PWA — shipped 2026-07-02: `manifest.webmanifest` + `icons/` + `sw.js` (shell/data
+      precached network-first; tiles cache-first LRU-capped; Supabase GETs network-first with
+      cached fallback = last-known locations offline; writes never intercepted). **Remaining:**
+      host over HTTPS (GitHub Pages / Netlify) so the phone can install it, then airplane-mode test.
 - [ ] Photo/file upload to Supabase Storage (replace pasted URLs)
 - [ ] Public website export / embed from the same data
 - [x] Script-writing export (locations → scene list) — shipped 2026-07-01 as the 📝 Scenes Markdown export
@@ -96,6 +99,8 @@ Vanilla JS + Leaflet. No framework, no bundler. Files:
 | `index.html` | Shell: sidebar + map pane + two slide-over panels (editor, planner) |
 | `app.js` | All logic (~500 lines, sectioned with comments) |
 | `styles.css` | Dark theme, responsive (mobile breakpoint 720px) |
+| `sw.js` | Service worker — offline strategies per resource type (see file header comment) |
+| `manifest.webmanifest` + `icons/` | PWA install metadata + app icons (regenerable with PIL — pin motif, app palette) |
 | `data/scarborough.geojson` | 30 Scarborough neighbourhood polygons (WGS84) + centroids |
 | `data/scarborough-boundary.geojson` | Outer Scarborough perimeter (5121 pts, computed from shared-edge cancellation) |
 | `data/toronto-neighbourhoods.geojson` | Full 158 Toronto neighbourhoods — **gitignored**, re-downloadable |

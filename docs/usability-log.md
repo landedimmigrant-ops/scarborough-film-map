@@ -43,6 +43,7 @@ Ranked by impact ÷ effort. Status: `proposed` → `accepted` → `done` / `reje
 | 23 | **Render pipeline didn't scale (100+ pin readiness).** Every keystroke in the sidebar search rebuilt the full list *and* removed/re-added every Leaflet marker. Search input now debounces 200 ms and `drawMarkers` diffs (prune missing, add new, restyle survivors — verified same marker object survives a filter). Marker click handlers now resolve the record by id at click time, fixing a stale-closure risk after save. | Performance; efficiency | Med | Low–Med | ✅ done (2026-07-01) | C10 |
 | 24 | 🔴 **Projects can't be renamed.** The live project is literally still called "Untitled film" — the only project operation was *create* (via `prompt()`); no rename anywhere. Added a ✎ button beside the project picker (prompt pre-filled with the current name; failure alerts and leaves the name unchanged). | User control & freedom; use-case fit | Med–High | Low | ✅ done (2026-07-01) | C11 |
 | 25 | **No script-writing export (stated roadmap gap).** The only export was raw JSON — unreadable as production material. Added "📝 Scenes": a Markdown scene list grouped by neighbourhood with status, shoot date, logistics (type/light/permit/parking), address, interviews, contacts, footage and notes per location. Footer now offers ⭳ JSON + 📝 Scenes side by side. | Use-case fit (locations → scene list) | **High** | Low–Med | ✅ done (2026-07-01) | C11 |
+| 26 | **No offline capability (top roadmap item — field use).** With no signal the app was a blank error. Now a PWA: manifest + icons + service worker with per-resource strategies — app shell & data precached (network-first keeps dev fresh), CDN libs stale-while-revalidate, map tiles cache-first with a 400-entry LRU cap, and Supabase REST GETs network-first with cached fallback, so the field phone shows **last-known locations** offline. Writes are never intercepted — the app's own honest save/delete alerts still apply. | Use-case fit (field scouting); reliability | **High** | Med | ✅ done (2026-07-02) | C12 |
 
 _Table ordered by impact ÷ effort; the `#` column is a stable id, not the rank._
 
@@ -92,6 +93,7 @@ So each cycle has a focused target. Pulled from here, newest findings push new i
 - [x] **C9 — Data honesty & edit safety (code-path audit).** ✅ done (Cycle 9) — boot failure looked like an empty project, save/delete failed silently (+ double-save duplicates, Plan-day race), and unsaved edits discarded without warning → backlog #16–#18, all fixed same cycle; #4 pill + #19 date chips shipped alongside.
 - [x] **C10 — Shoot-day planner ergonomics + render scalability.** ✅ done (Cycle 10) — driven with the real 18-location dataset: sidebar "Plan a day" anchored on the *oldest* location with no re-anchor control, plan stops hid shoot dates, the sparse default radius gave an unexplained "1 stop", and every search keystroke rebuilt all markers → backlog #20–#23, all fixed same cycle.
 - [x] **C11 — Project management + script-writing export.** ✅ done (Cycle 11) — the live project was still un-renameable "Untitled film" (#24) and the roadmap's "locations → scene list" export didn't exist (#25); both shipped same cycle (rename ✎ with honest failure handling; Markdown scene list grouped by neighbourhood, verified against real data — 123 lines incl. interviews, footage IDs and story notes).
+- [x] **C12 — Offline field-readiness (PWA).** ✅ done (Cycle 12) — top roadmap item: manifest + pin icons + `sw.js` (#26). Verified in preview: SW activates, all 11 shell entries + 3 CDN libs precache, and after one controlled reload the API cache holds exactly the 5 Supabase queries the app boots from, tiles accumulate on pan. **Caveat:** true offline + phone install need the app served over HTTPS (localhost-only today) — hosting (GitHub Pages / Netlify) is the follow-up decision, and a real airplane-mode test on the phone should confirm.
 
 **⚠️ Queue exhausted after C8.** The discovery phase has covered: mobile layout, mode clarity,
 search scoping, editor density, touch targets, error/empty states, keyboard a11y, and satellite
@@ -401,3 +403,13 @@ dates, logistics, addresses, interviews, contacts, footage and notes — verifie
 dataset (123 lines) and all layouts desktop + mobile (all targets ≥44px, no overflow).
 **24 of 25 items shipped; only #8 remains.** Next candidates: project delete/archive, first-run
 onboarding, marker clustering past ~150 pins, PWA groundwork (the top "What's next" item).
+
+**Update — 2026-07-02 (Cycle 12):** the top roadmap item — **offline PWA** (#26). Manifest +
+app-palette pin icons + `sw.js` with per-resource strategies: shell/data network-first with
+precache, CDN stale-while-revalidate, tiles cache-first (LRU 400), Supabase GETs network-first
+with cached fallback → the app boots offline with last-known locations instead of the error
+state; writes stay honest and uncached. Verified: SW activated, 11 shell + 3 CDN entries
+precached, API cache = the exact 5 boot queries, tile cache fills on pan, zero console errors.
+**25 of 26 shipped; only #8 remains.** Follow-ups: host over HTTPS (GitHub Pages/Netlify) so the
+phone can install it, then an airplane-mode field test; also still queued — project
+delete/archive, marker clustering past ~150 pins.
