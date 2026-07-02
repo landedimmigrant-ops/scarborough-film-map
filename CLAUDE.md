@@ -70,8 +70,9 @@ contacts, footage, notes), which is the "script-writing export" roadmap item.
 ### What's next
 - [x] Offline PWA — shipped 2026-07-02: `manifest.webmanifest` + `icons/` + `sw.js` (shell/data
       precached network-first; tiles cache-first LRU-capped; Supabase GETs network-first with
-      cached fallback = last-known locations offline; writes never intercepted). **Remaining:**
-      host over HTTPS (GitHub Pages / Netlify) so the phone can install it, then airplane-mode test.
+      cached fallback = last-known locations offline; writes never intercepted). **Hosted on
+      Cloudflare Pages 2026-07-02** → https://scarborough-film-map.pages.dev (see Deploy section).
+      **Remaining:** install on the phone (Add to Home Screen) + airplane-mode field test.
 - [x] Photo/file upload to Supabase Storage — shipped 2026-07-02: 📤 Upload in the editor
       (multi-select, client-side 1600px JPEG compression, public `photos` bucket; URL flows into
       the existing media-row persistence). Follow-up idea: GC storage objects on photo removal.
@@ -85,6 +86,15 @@ python3 -m http.server 8138      # from this folder → http://localhost:8138
 ```
 No build step, no install. Leaflet 1.9.4 + Supabase JS v2 load from CDN.
 There's a `.claude/launch.json` (server name `scarborough-film-map`, port 8138).
+
+## Deploy (Cloudflare Pages)
+
+- **Live:** https://scarborough-film-map.pages.dev (HTTPS → the PWA installs on the phone)
+- `./deploy.sh` — copies only the runtime files into `dist/` (CLAUDE.md/docs stay off the public
+  site; unknown paths fall back to index.html) and runs `wrangler pages deploy`
+- Auth: `npx wrangler login` (one-time, browser OAuth). Project `scarborough-film-map`, production branch `main`
+- Note: the URL is public — anyone who finds it can use the app (same single-user posture as the
+  anon key). Cloudflare Access (Zero Trust, free tier) can gate it behind an email login if wanted.
 
 ## Repo
 
