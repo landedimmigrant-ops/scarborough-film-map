@@ -392,7 +392,7 @@ function openDetail(source, isNew) {
     <div id="interviews"></div>
     <div class="subhead">🎬 Footage / shots <button class="btn ghost" id="add-footage">＋ Add</button></div>
     <div id="footage"></div>
-    <div class="subhead">📷 Reference photos <button class="btn ghost" id="add-photo">＋ URL</button></div>
+    <div class="subhead">📷 Reference photos <span class="subhead-btns"><button class="btn ghost" id="add-photo-upload">📤 Upload</button><button class="btn ghost" id="add-photo">＋ URL</button></span></div>
     <div id="photos"></div>
 
     <div class="panel-actions">
@@ -416,6 +416,7 @@ function openDetail(source, isNew) {
   document.getElementById("add-interview").onclick = () => { dirtyEdit = true; editing.interviews.push({ subject: "", role: "", status: "idea" }); renderInterviews(); };
   document.getElementById("add-footage").onclick = () => { dirtyEdit = true; editing.footage.push({ label: "", notes: "" }); renderFootage(); };
   document.getElementById("add-photo").onclick = () => { dirtyEdit = true; editing.photos.push(""); renderPhotos(); };
+  document.getElementById("add-photo-upload").onclick = pickAndUploadPhotos;
   document.getElementById("d-save").onclick = saveDetail;
   document.getElementById("d-plan").onclick = async () => {
     const savedId = await saveDetail();   // wait for the save — a brand-new pin gets its id here
@@ -466,9 +467,56 @@ function renderPhotos() {
     row.append(inp, rm); wrap.appendChild(row);
   });
   const grid = document.createElement("div"); grid.className = "photo-grid";
-  editing.photos.filter(Boolean).forEach((u) => { const img = document.createElement("img"); img.src = u; img.onerror = () => (img.style.display = "none"); grid.appendChild(img); });
+  editing.photos.filter(Boolean).forEach((u) => {
+    const img = document.createElement("img"); img.src = u; img.onerror = () => (img.style.display = "none");
+    img.title = "Open full size"; img.onclick = () => window.open(u, "_blank", "noopener");
+    grid.appendChild(img);
+  });
   wrap.appendChild(grid);
 }
+/* ---------- reference-photo upload (Supabase Storage, public "photos" bucket) ---------- */
+// phones hand over 3–12 MB originals; a 1600px JPEG is plenty for scouting reference
+async function compressImage(file, maxDim = 1600, quality = 0.82) {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  canvas.getContext("2d").drawImage(bmp, 0, 0, w, h);
+  return await new Promise((res, rej) => canvas.toBlob((b) => (b ? res(b) : rej(new Error("toBlob failed"))), "image/jpeg", quality));
+}
+async function uploadPhoto(file) {
+  const blob = await compressImage(file).catch(() => file);   // unreadable format → upload the original
+  const path = `${db.activeProjectId || "no-project"}/${rid("ph")}.jpg`;
+  const { error } = await sb.storage.from("photos").upload(path, blob, { contentType: "image/jpeg" });
+  if (error) throw error;
+  return sb.storage.from("photos").getPublicUrl(path).data.publicUrl;
+}
+function pickAndUploadPhotos() {
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "image/*"; inp.multiple = true;
+  inp.onchange = async () => {
+    const files = Array.from(inp.files || []);
+    if (!files.length) return;
+    const btn = document.getElementById("add-photo-upload");
+    if (btn) { btn.disabled = true; btn.textContent = "Uploading…"; }
+    let failed = 0;
+    for (const f of files) {
+      try {
+        const url = await uploadPhoto(f);
+        if (!editing) return;   // editor closed mid-upload — stop quietly
+        editing.photos.push(url);
+        dirtyEdit = true;
+        renderPhotos();
+      } catch (e) { console.error("photo upload:", e); failed++; }
+    }
+    const b = document.getElementById("add-photo-upload");
+    if (b) { b.disabled = false; b.textContent = "📤 Upload"; }
+    if (failed) alert(`Couldn't upload ${failed} photo${failed === 1 ? "" : "s"} — check your connection and try again.`);
+  };
+  inp.click();
+}
+
 async function saveDetail() {
   const btn = document.getElementById("d-save");
   if (btn && btn.disabled) return;   // a save is already in flight — no double-insert

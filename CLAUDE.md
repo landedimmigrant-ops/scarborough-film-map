@@ -72,7 +72,9 @@ contacts, footage, notes), which is the "script-writing export" roadmap item.
       precached network-first; tiles cache-first LRU-capped; Supabase GETs network-first with
       cached fallback = last-known locations offline; writes never intercepted). **Remaining:**
       host over HTTPS (GitHub Pages / Netlify) so the phone can install it, then airplane-mode test.
-- [ ] Photo/file upload to Supabase Storage (replace pasted URLs)
+- [x] Photo/file upload to Supabase Storage — shipped 2026-07-02: 📤 Upload in the editor
+      (multi-select, client-side 1600px JPEG compression, public `photos` bucket; URL flows into
+      the existing media-row persistence). Follow-up idea: GC storage objects on photo removal.
 - [ ] Public website export / embed from the same data
 - [x] Script-writing export (locations → scene list) — shipped 2026-07-01 as the 📝 Scenes Markdown export
 
@@ -185,6 +187,12 @@ create table interviews (id uuid primary key default gen_random_uuid(), location
 create table contacts (id uuid primary key default gen_random_uuid(), location_id uuid references locations(id) on delete cascade, name text, role text, detail text);
 create table media (id uuid primary key default gen_random_uuid(), location_id uuid references locations(id) on delete cascade, kind text, label text, url text, notes text);
 ```
+
+**Storage (added 2026-07-02):** public bucket `photos` with anon `insert`/`select`/`delete`
+policies scoped to `bucket_id = 'photos'` (single-user posture, same as the allow-all table
+policies). Uploaded photos live at `photos/<project_id>/<rand>.jpg`; the app stores only the
+public URL in `media` rows. `locations_view` is `security_invoker = true` (advisor fix — keep it
+that way if the view is ever recreated).
 
 ### Seeded data (already in Supabase)
 

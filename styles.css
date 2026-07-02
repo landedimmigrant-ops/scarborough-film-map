@@ -111,6 +111,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 .subhead { font-size: 12px; font-weight: 700; color: var(--text); margin: 16px 0 8px;
   display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); padding-top: 12px; }
 .subhead button { font-size: 11px; padding: 3px 8px; flex: 0 0 auto; }
+.subhead-btns { display: flex; gap: 6px; }
+.photo-grid img { cursor: pointer; }
+.photo-grid img:hover { border-color: var(--accent); }
 
 .repeat-row { display: flex; gap: 6px; align-items: flex-start; margin-bottom: 6px; }
 .repeat-row input, .repeat-row select { font-size: 12px; padding: 6px 8px; }
