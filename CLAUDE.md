@@ -57,6 +57,11 @@ the Supabase result); the `dirtyEdit` flag guards unsaved edits with a discard c
 card-switch / planner / map-click (only real user input marks it dirty — programmatic auto-fill doesn't);
 an on-map "Explore mode" pill (`#mode-pill`) shows while explore is active; list cards show a 🗓
 shoot-date chip. Only backlog #8 (collapse editor logistics) remains — see the log.
+**Shipped 2026-07-01 (Cycle 10 — planner + perf):** the planner has a "Plan around" anchor select
+(sidebar default = most recently added); plan stops + the exported list show 🗓 shoot dates (and
+addresses in the export); an inline hint appears when no stops fall inside the radius; the sidebar
+search debounces 200 ms and `drawMarkers` diffs markers instead of clear-and-redraw (marker clicks
+resolve the record by id at click time — don't reintroduce captured-object handlers there).
 
 ### What's next
 - [ ] Offline PWA (installable, works without signal on your phone in the field)

@@ -513,17 +513,25 @@ function openPlanner(anchor) {
   renderPlanner(2);
   panel.focus();
 }
+function planMeta(l) { return `${esc(l.neighbourhood)} · ${STATUS[l.status].label}${l.shootDate ? ` · 🗓 ${esc(l.shootDate)}` : ""}`; }
 function renderPlanner(km) {
   const a = plannerAnchor;
   const near = projectLocs().filter((l) => l.id !== a.id).map((l) => ({ l, d: distKm(a, l) })).filter((x) => x.d <= km).sort((x, y) => x.d - y.d);
+  const anchorOpts = projectLocs().slice().sort((x, y) => (x.title || "").localeCompare(y.title || ""))
+    .map((l) => `<option value="${esc(l.id)}" ${l.id === a.id ? "selected" : ""}>${esc(l.title || "Untitled")}</option>`).join("");
   document.getElementById("planner-body").innerHTML = `
-    <div class="field"><label>Anchor</label><b>${esc(a.title)}</b> · ${esc(a.neighbourhood)}</div>
+    <div class="field"><label>Plan around</label><select id="plan-anchor">${anchorOpts}</select></div>
     <div class="field"><label>Radius: <span class="dist">${km.toFixed(1)} km</span></label>
       <input id="r-range" type="range" min="0.5" max="10" step="0.5" value="${km}"></div>
     <div class="field"><label>${near.length + 1} stop${near.length ? "s" : ""} this day</label></div>
-    <div class="plan-item"><b>${esc(a.title)}</b> <span class="dist">0.0 km</span><div class="pm">${esc(a.neighbourhood)} · ${STATUS[a.status].label}</div></div>
-    ${near.map((x) => `<div class="plan-item"><b>${esc(x.l.title)}</b> <span class="dist">${x.d.toFixed(1)} km</span><div class="pm">${esc(x.l.neighbourhood)} · ${STATUS[x.l.status].label}</div></div>`).join("")}
+    <div class="plan-item"><b>${esc(a.title)}</b> <span class="dist">0.0 km</span><div class="pm">${planMeta(a)}</div></div>
+    ${near.length ? near.map((x) => `<div class="plan-item"><b>${esc(x.l.title)}</b> <span class="dist">${x.d.toFixed(1)} km</span><div class="pm">${planMeta(x.l)}</div></div>`).join("")
+      : `<div class="empty-mini" style="margin:10px 0">No other locations within ${km.toFixed(1)} km — widen the radius.</div>`}
     <div class="panel-actions"><button class="btn primary" id="plan-export">⭳ Export shoot list</button></div>`;
+  document.getElementById("plan-anchor").onchange = (e) => {
+    const next = projectLocs().find((l) => l.id === e.target.value);
+    if (next) { plannerAnchor = next; renderPlanner(km); }
+  };
   document.getElementById("r-range").addEventListener("input", (e) => renderPlanner(parseFloat(e.target.value)));
   document.getElementById("plan-export").onclick = () => exportShootList(a, km, near);
   drawPlanCircle(a, km);
@@ -541,20 +549,33 @@ function closePlanner() {
 }
 document.getElementById("planner-close").onclick = closePlanner;
 function exportShootList(a, km, near) {
-  const L = [`SHOOT DAY — ${activeProject().name}`, `Anchor: ${a.title} (${a.neighbourhood})`, `Within ${km.toFixed(1)} km — ${near.length + 1} locations`, "",
-    `1. ${a.title} — ${a.neighbourhood} — 0.0 km — ${STATUS[a.status].label}`];
-  near.forEach((x, i) => L.push(`${i + 2}. ${x.l.title} — ${x.l.neighbourhood} — ${x.d.toFixed(1)} km — ${STATUS[x.l.status].label}`));
-  download(L.join("\n"), `shoot-day-${(a.neighbourhood || "scarborough").replace(/\W+/g, "-").toLowerCase()}.txt`, "text/plain");
+  // field-usable lines: status + shoot date on the stop line, street address underneath when known
+  const stop = (n, l, d) => `${n}. ${l.title} — ${l.neighbourhood} — ${d} km — ${STATUS[l.status].label}` +
+    (l.shootDate ? ` — shoot ${l.shootDate}` : "") + (l.address ? `\n   ${l.address}` : "");
+  const lines = [`SHOOT DAY — ${activeProject().name}`, `Anchor: ${a.title} (${a.neighbourhood})`, `Within ${km.toFixed(1)} km — ${near.length + 1} locations`, "",
+    stop(1, a, "0.0")];
+  near.forEach((x, i) => lines.push(stop(i + 2, x.l, x.d.toFixed(1))));
+  download(lines.join("\n"), `shoot-day-${(a.neighbourhood || "scarborough").replace(/\W+/g, "-").toLowerCase()}.txt`, "text/plain");
 }
 function download(content, name, type) { const b = new Blob([content], { type }); const u = document.createElement("a"); u.href = URL.createObjectURL(b); u.download = name; u.click(); }
 
 /* ---------- markers + sidebar ---------- */
 function drawMarkers(list) {
-  markers.forEach((m) => map.removeLayer(m)); markers.clear();
+  // diff instead of clear-and-redraw so filtering/search stays cheap at 100+ pins
+  const keep = new Set(list.map((l) => l.id));
+  markers.forEach((m, id) => { if (!keep.has(id)) { map.removeLayer(m); markers.delete(id); } });
   list.forEach((loc) => {
+    const existing = markers.get(loc.id);
+    if (existing) {
+      existing.setLatLng([loc.lat, loc.lng]);
+      existing.setStyle({ fillColor: STATUS[loc.status].color });
+      existing.setTooltipContent(loc.title || "Untitled");
+      return;
+    }
     const m = L.circleMarker([loc.lat, loc.lng], { radius: 7, weight: 2, color: "#0c1117", fillColor: STATUS[loc.status].color, fillOpacity: 1 }).addTo(map);
     m.bindTooltip(loc.title || "Untitled");
-    m.on("click", () => openDetail(loc, false));
+    // look the record up at click time — the in-memory object is replaced on save
+    m.on("click", () => { const cur = db.locations.find((x) => x.id === loc.id); if (cur) openDetail(cur, false); });
     markers.set(loc.id, m);
   });
 }
@@ -824,7 +845,10 @@ function buildHoodFilter() {
 }
 
 /* ---------- controls ---------- */
-["search", "filter-status", "filter-hood"].forEach((id) => document.getElementById(id).addEventListener("input", render));
+["filter-status", "filter-hood"].forEach((id) => document.getElementById(id).addEventListener("input", render));
+// typing shouldn't rebuild the list + markers per keystroke — settle for 200 ms first
+let searchTimer = null;
+document.getElementById("search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(render, 200); });
 document.getElementById("project-select").onchange = (e) => { db.activeProjectId = e.target.value; fitted = false; render(); };
 document.getElementById("new-project").onclick = async () => {
   const name = prompt("New project (film / production) name:");
@@ -836,7 +860,7 @@ document.getElementById("new-project").onclick = async () => {
 document.getElementById("plan-day").onclick = () => {
   const locs = projectLocs();
   if (!locs.length) { alert("Add a location first, then plan a day around it."); return; }
-  openPlanner(locs[0]);
+  openPlanner(locs[locs.length - 1]);   // most recently added — and the picker lets you re-anchor
 };
 document.getElementById("use-location").onclick = () => {
   if (!navigator.geolocation) { alert("Geolocation not supported on this device."); return; }

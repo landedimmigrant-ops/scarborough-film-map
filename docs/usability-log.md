@@ -37,6 +37,10 @@ Ranked by impact ÷ effort. Status: `proposed` → `accepted` → `done` / `reje
 | 17 | 🔴 **Save/delete failures are silent (cloud data loss).** `saveDetail` ignored `saveLocation` returning null: the panel closed, the pin appeared locally, and the edit vanished on reload. Double-clicking Save could insert duplicates, and "Plan day" raced the save (broken for brand-new pins). Now: Save disables to "Saving…" while in flight, failure alerts and keeps the editor open with edits intact, delete failure alerts and keeps the location, Plan-day awaits the save and works from new pins. | Error prevention; honest system status | **High** | Low–Med | ✅ done (2026-07-01) | C9 |
 | 18 | 🔴 **Unsaved edits discard silently.** Esc, the ✕ close, opening another card, opening the planner, or clicking the map to mark a new pin all threw away typed edits with no warning. Now the editor tracks real user input (typed fields, added/removed rows, chip picks — not programmatic auto-fill) and asks "Discard unsaved changes?" before closing; declining keeps the editor open and blocks the new action. | Error prevention (data loss) | **High** | Med | ✅ done (2026-07-01) | C9 |
 | 19 | **Shoot-date chip on list cards.** Cards showed people/footage/permit chips but not the shoot date — the single most scheduling-relevant fact for a scouting list. Cards now show 🗓 YYYY-MM-DD when a date is set. | Recognition rather than recall; use-case fit | Med | Low | ✅ done (2026-07-01) | C9 |
+| 20 | 🔴 **Planner anchor was arbitrary and unchangeable.** Sidebar "Plan a day" silently anchored on the *oldest* location with no way to re-anchor inside the planner (you had to know to go through a location's editor). Now: a "Plan around" select lists every location, the sidebar default is the most recently added, and changing it re-renders list + map circle. | User control & freedom; recognition rather than recall | **High** | Low | ✅ done (2026-07-01) | C10 |
+| 21 | **Plan items hid shoot dates; export was too thin for the field.** Stops showed hood + status but not 🗓 date (can't tell scheduled/shot stops from open candidates); the exported list had no dates or street addresses. Both added. | Use-case fit (shoot-day batching) | Med | Low | ✅ done (2026-07-01) | C10 |
+| 22 | **Sparse default radius gave a bare "1 stop" with no guidance.** At the 2 km default a lone anchor rendered with no nudge. Now an inline hint says "No other locations within X km — widen the radius." | Help & guidance | Low–Med | Low | ✅ done (2026-07-01) | C10 |
+| 23 | **Render pipeline didn't scale (100+ pin readiness).** Every keystroke in the sidebar search rebuilt the full list *and* removed/re-added every Leaflet marker. Search input now debounces 200 ms and `drawMarkers` diffs (prune missing, add new, restyle survivors — verified same marker object survives a filter). Marker click handlers now resolve the record by id at click time, fixing a stale-closure risk after save. | Performance; efficiency | Med | Low–Med | ✅ done (2026-07-01) | C10 |
 
 _Table ordered by impact ÷ effort; the `#` column is a stable id, not the rank._
 
@@ -84,6 +88,7 @@ So each cycle has a focused target. Pulled from here, newest findings push new i
 - [x] **C7 — Keyboard / focus order (desktop a11y).** ✅ done (Cycle 7) — list cards aren't keyboard-operable, no focus move/trap into panels, Esc doesn't close, weak focus rings → backlog #13, #14.
 - [x] **C8 — Colour/status legibility on satellite.** ✅ done (Cycle 8) — pins hold up (dark ring), but hood labels lose contrast on bright imagery + clutter → backlog #15.
 - [x] **C9 — Data honesty & edit safety (code-path audit).** ✅ done (Cycle 9) — boot failure looked like an empty project, save/delete failed silently (+ double-save duplicates, Plan-day race), and unsaved edits discarded without warning → backlog #16–#18, all fixed same cycle; #4 pill + #19 date chips shipped alongside.
+- [x] **C10 — Shoot-day planner ergonomics + render scalability.** ✅ done (Cycle 10) — driven with the real 18-location dataset: sidebar "Plan a day" anchored on the *oldest* location with no re-anchor control, plan stops hid shoot dates, the sparse default radius gave an unexplained "1 stop", and every search keystroke rebuilt all markers → backlog #20–#23, all fixed same cycle.
 
 **⚠️ Queue exhausted after C8.** The discovery phase has covered: mobile layout, mode clarity,
 search scoping, editor density, touch targets, error/empty states, keyboard a11y, and satellite
@@ -373,3 +378,14 @@ same cycle (simulated failure/decline/accept paths in the preview, desktop + mob
 pill) and #19 (date chips). **18 of 19 items shipped; only #8 remains.** Next discovery candidates:
 multi-project switching, export formats (shot-list/CSV), performance with 100+ pins, first-run
 onboarding.
+
+**Update — 2026-07-01 (Cycle 10):** planner + performance pass, driven with the real 18-location
+dataset. The planner's biggest flaw was structural: the sidebar entry point picked the *oldest*
+location as anchor with no way to change it (#20 — now a "Plan around" select, defaulting to the
+most recent). Stops and exports now carry 🗓 shoot dates (+ addresses in export) (#21), the sparse
+default radius explains itself (#22), and rendering scales: 200 ms search debounce + marker diffing
+instead of clear-and-redraw, with click handlers resolving records by id (fixes a stale-closure bug
+after save) (#23). Verified desktop + mobile with a captured export ("shoot-day-cliffcrest.txt", 8
+dated stops around Bluffers Park). **22 of 23 items shipped; only #8 remains.** Next candidates:
+multi-project management (rename/delete), CSV/scene-list export, first-run onboarding, marker
+clustering past ~150 pins.
