@@ -166,6 +166,12 @@ async function saveProject(proj) {
   return proj;
 }
 
+async function renameProject(id, name) {
+  const { error } = await sb.from("projects").update({ name }).eq("id", id);
+  if (error) { console.error("rename project:", error); return false; }
+  return true;
+}
+
 // Legacy save() kept as a no-op so existing event handlers don't break during init
 function save() {}
 
@@ -854,8 +860,17 @@ document.getElementById("new-project").onclick = async () => {
   const name = prompt("New project (film / production) name:");
   if (!name) return;
   const p = await saveProject({ _isNew: true, name: name.trim() });
-  if (!p) return;
+  if (!p) { alert("Couldn't create the project — check your connection and try again."); return; }
   db.projects.push(p); db.activeProjectId = p.id; render();
+};
+document.getElementById("rename-project").onclick = async () => {
+  const p = activeProject();
+  if (!p) return;
+  const name = prompt("Rename project:", p.name);
+  if (!name || !name.trim() || name.trim() === p.name) return;
+  if (!(await renameProject(p.id, name.trim()))) { alert("Couldn't rename — check your connection and try again."); return; }
+  p.name = name.trim();
+  renderProjects();
 };
 document.getElementById("plan-day").onclick = () => {
   const locs = projectLocs();
@@ -871,6 +886,35 @@ document.getElementById("use-location").onclick = () => {
   );
 };
 document.getElementById("export").onclick = () => download(JSON.stringify({ project: activeProject(), locations: projectLocs() }, null, 2), `${activeProject().name.replace(/\W+/g, "-").toLowerCase()}.json`, "application/json");
+
+/* Markdown scene list — feeds script-writing: locations grouped by neighbourhood with
+   logistics, people, interviews, footage and notes in one readable document */
+function exportSceneList() {
+  const locs = projectLocs();
+  if (!locs.length) { alert("Add a location first — the scene list is built from your locations."); return; }
+  const byHood = {};
+  locs.forEach((l) => { const h = l.neighbourhood || "Unplaced"; (byHood[h] = byHood[h] || []).push(l); });
+  const lines = [`# ${activeProject().name} — scene list`,
+    `${locs.length} location${locs.length === 1 ? "" : "s"} · exported ${new Date().toLocaleDateString("en-CA")}`];
+  Object.keys(byHood).sort().forEach((hood) => {
+    lines.push("", `## ${hood}`);
+    byHood[hood].slice().sort((a, b) => (a.title || "").localeCompare(b.title || "")).forEach((l) => {
+      lines.push("", `### ${l.title} — ${STATUS[l.status].label}${l.shootDate ? ` · shoot ${l.shootDate}` : ""}`);
+      const logistics = [l.category,
+        l.bestTime && `best light: ${l.bestTime}`,
+        l.permit && l.permit !== "n/a" && `permit: ${l.permit}`,
+        l.parking && `parking: ${l.parking}`].filter(Boolean).join(" · ");
+      if (logistics) lines.push(`- ${logistics}`);
+      if (l.address) lines.push(`- 📍 ${l.address}`);
+      (l.interviews || []).forEach((i) => lines.push(`- 🎤 ${i.subject}${i.role ? ` (${i.role})` : ""} — ${i.status}`));
+      (l.contacts || []).forEach((c) => lines.push(`- 👤 ${c.name}${c.role ? ` (${c.role})` : ""}${c.detail ? ` — ${c.detail}` : ""}`));
+      (l.footage || []).forEach((f) => lines.push(`- 🎬 ${f.label}${f.notes ? ` — ${f.notes}` : ""}`));
+      if (l.notes) lines.push(`- 📝 ${l.notes}`);
+    });
+  });
+  download(lines.join("\n"), `${activeProject().name.replace(/\W+/g, "-").toLowerCase()}-scene-list.md`, "text/markdown");
+}
+document.getElementById("export-scenes").onclick = exportSceneList;
 document.getElementById("sidebar-toggle").onclick = () => document.getElementById("sidebar").classList.toggle("collapsed");
 document.getElementById("explore-toggle").addEventListener("click", () => {
   exploreMode = !exploreMode;

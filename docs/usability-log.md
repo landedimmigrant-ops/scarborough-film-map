@@ -41,6 +41,8 @@ Ranked by impact ÷ effort. Status: `proposed` → `accepted` → `done` / `reje
 | 21 | **Plan items hid shoot dates; export was too thin for the field.** Stops showed hood + status but not 🗓 date (can't tell scheduled/shot stops from open candidates); the exported list had no dates or street addresses. Both added. | Use-case fit (shoot-day batching) | Med | Low | ✅ done (2026-07-01) | C10 |
 | 22 | **Sparse default radius gave a bare "1 stop" with no guidance.** At the 2 km default a lone anchor rendered with no nudge. Now an inline hint says "No other locations within X km — widen the radius." | Help & guidance | Low–Med | Low | ✅ done (2026-07-01) | C10 |
 | 23 | **Render pipeline didn't scale (100+ pin readiness).** Every keystroke in the sidebar search rebuilt the full list *and* removed/re-added every Leaflet marker. Search input now debounces 200 ms and `drawMarkers` diffs (prune missing, add new, restyle survivors — verified same marker object survives a filter). Marker click handlers now resolve the record by id at click time, fixing a stale-closure risk after save. | Performance; efficiency | Med | Low–Med | ✅ done (2026-07-01) | C10 |
+| 24 | 🔴 **Projects can't be renamed.** The live project is literally still called "Untitled film" — the only project operation was *create* (via `prompt()`); no rename anywhere. Added a ✎ button beside the project picker (prompt pre-filled with the current name; failure alerts and leaves the name unchanged). | User control & freedom; use-case fit | Med–High | Low | ✅ done (2026-07-01) | C11 |
+| 25 | **No script-writing export (stated roadmap gap).** The only export was raw JSON — unreadable as production material. Added "📝 Scenes": a Markdown scene list grouped by neighbourhood with status, shoot date, logistics (type/light/permit/parking), address, interviews, contacts, footage and notes per location. Footer now offers ⭳ JSON + 📝 Scenes side by side. | Use-case fit (locations → scene list) | **High** | Low–Med | ✅ done (2026-07-01) | C11 |
 
 _Table ordered by impact ÷ effort; the `#` column is a stable id, not the rank._
 
@@ -89,6 +91,7 @@ So each cycle has a focused target. Pulled from here, newest findings push new i
 - [x] **C8 — Colour/status legibility on satellite.** ✅ done (Cycle 8) — pins hold up (dark ring), but hood labels lose contrast on bright imagery + clutter → backlog #15.
 - [x] **C9 — Data honesty & edit safety (code-path audit).** ✅ done (Cycle 9) — boot failure looked like an empty project, save/delete failed silently (+ double-save duplicates, Plan-day race), and unsaved edits discarded without warning → backlog #16–#18, all fixed same cycle; #4 pill + #19 date chips shipped alongside.
 - [x] **C10 — Shoot-day planner ergonomics + render scalability.** ✅ done (Cycle 10) — driven with the real 18-location dataset: sidebar "Plan a day" anchored on the *oldest* location with no re-anchor control, plan stops hid shoot dates, the sparse default radius gave an unexplained "1 stop", and every search keystroke rebuilt all markers → backlog #20–#23, all fixed same cycle.
+- [x] **C11 — Project management + script-writing export.** ✅ done (Cycle 11) — the live project was still un-renameable "Untitled film" (#24) and the roadmap's "locations → scene list" export didn't exist (#25); both shipped same cycle (rename ✎ with honest failure handling; Markdown scene list grouped by neighbourhood, verified against real data — 123 lines incl. interviews, footage IDs and story notes).
 
 **⚠️ Queue exhausted after C8.** The discovery phase has covered: mobile layout, mode clarity,
 search scoping, editor density, touch targets, error/empty states, keyboard a11y, and satellite
@@ -389,3 +392,12 @@ after save) (#23). Verified desktop + mobile with a captured export ("shoot-day-
 dated stops around Bluffers Park). **22 of 23 items shipped; only #8 remains.** Next candidates:
 multi-project management (rename/delete), CSV/scene-list export, first-run onboarding, marker
 clustering past ~150 pins.
+
+**Update — 2026-07-01 (Cycle 11):** project management + the roadmap's script-writing export.
+Projects gained rename (✎ beside the picker — the live project had been stuck as "Untitled film"
+with no way to change it) with Cycle-9-style honest failure handling, and the footer now offers
+**⭳ JSON + 📝 Scenes**: a Markdown scene list grouped by neighbourhood carrying status, shoot
+dates, logistics, addresses, interviews, contacts, footage and notes — verified against the real
+dataset (123 lines) and all layouts desktop + mobile (all targets ≥44px, no overflow).
+**24 of 25 items shipped; only #8 remains.** Next candidates: project delete/archive, first-run
+onboarding, marker clustering past ~150 pins, PWA groundwork (the top "What's next" item).

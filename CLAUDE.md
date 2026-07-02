@@ -62,12 +62,16 @@ shoot-date chip. Only backlog #8 (collapse editor logistics) remains — see the
 addresses in the export); an inline hint appears when no stops fall inside the radius; the sidebar
 search debounces 200 ms and `drawMarkers` diffs markers instead of clear-and-redraw (marker clicks
 resolve the record by id at click time — don't reintroduce captured-object handlers there).
+**Shipped 2026-07-01 (Cycle 11 — projects + script export):** projects can be renamed (✎ button,
+`renameProject`); the footer offers **⭳ JSON** and **📝 Scenes** — `exportSceneList()` writes a
+Markdown scene list grouped by neighbourhood (status, shoot date, logistics, address, interviews,
+contacts, footage, notes), which is the "script-writing export" roadmap item.
 
 ### What's next
 - [ ] Offline PWA (installable, works without signal on your phone in the field)
 - [ ] Photo/file upload to Supabase Storage (replace pasted URLs)
 - [ ] Public website export / embed from the same data
-- [ ] Script-writing export (locations → scene list)
+- [x] Script-writing export (locations → scene list) — shipped 2026-07-01 as the 📝 Scenes Markdown export
 
 ## Run / verify
 

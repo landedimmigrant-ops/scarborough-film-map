@@ -14,7 +14,8 @@
         <h1>Scarborough <span>Film Map</span></h1>
         <div class="project-bar">
           <select id="project-select" title="Active project"></select>
-          <button id="new-project" class="icon-btn" title="New project">＋</button>
+          <button id="rename-project" class="icon-btn" title="Rename this project" aria-label="Rename this project">✎</button>
+          <button id="new-project" class="icon-btn" title="New project" aria-label="New project">＋</button>
         </div>
         <p class="tagline">Click the map to add a location.</p>
       </header>
@@ -42,7 +43,10 @@
       <div id="list" class="list"><div class="empty">Loading your locations…</div></div>
 
       <footer class="side-foot">
-        <button id="export" class="btn ghost" title="Download this project as JSON">⭳ Export</button>
+        <div class="foot-actions">
+          <button id="export" class="btn ghost" title="Download this project as JSON">⭳ JSON</button>
+          <button id="export-scenes" class="btn ghost" title="Markdown scene list for script-writing">📝 Scenes</button>
+        </div>
         <span class="count" id="count">0 locations</span>
       </footer>
     </aside>
