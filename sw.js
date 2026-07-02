@@ -44,10 +44,16 @@ self.addEventListener("activate", (e) => {
   })());
 });
 
-async function networkFirst(req, cacheName) {
+async function networkFirst(req, cacheName, revalidate) {
   const cache = await caches.open(cacheName);
   try {
-    const res = await fetch(req);
+    let fetchReq = req;
+    if (revalidate) {
+      // bypass the browser's heuristic HTTP cache so local edits show on the next plain reload
+      try { fetchReq = new Request(req, { cache: "no-cache" }); }
+      catch (e) { fetchReq = new Request(req.url, { cache: "no-cache" }); }  // navigation requests can't be copied
+    }
+    const res = await fetch(fetchReq);
     if (res && res.ok) cache.put(req, res.clone());
     return res;
   } catch (err) {
@@ -90,7 +96,7 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return; // writes always hit the network
   const url = new URL(req.url);
-  if (url.origin === location.origin) { e.respondWith(networkFirst(req, SHELL)); return; }
+  if (url.origin === location.origin) { e.respondWith(networkFirst(req, SHELL, true)); return; }
   if (url.hostname === "unpkg.com") { e.respondWith(staleWhileRevalidate(req, CDN)); return; }
   if (url.hostname === "tile.openstreetmap.org" || url.hostname === "server.arcgisonline.com") {
     e.respondWith(cacheFirstCapped(req, TILES, TILE_CAP)); return;
