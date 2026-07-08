@@ -198,11 +198,23 @@ create table contacts (id uuid primary key default gen_random_uuid(), location_i
 create table media (id uuid primary key default gen_random_uuid(), location_id uuid references locations(id) on delete cascade, kind text, label text, url text, notes text);
 ```
 
-**Storage (added 2026-07-02):** public bucket `photos` with anon `insert`/`select`/`delete`
-policies scoped to `bucket_id = 'photos'` (single-user posture, same as the allow-all table
-policies). Uploaded photos live at `photos/<project_id>/<rand>.jpg`; the app stores only the
-public URL in `media` rows. `locations_view` is `security_invoker = true` (advisor fix — keep it
-that way if the view is ever recreated).
+**Storage (added 2026-07-02):** public bucket `photos` with anon `insert` + `delete` policies
+scoped to `bucket_id = 'photos'` (single-user posture, same as the allow-all table policies).
+Uploaded photos live at `photos/<project_id>/<rand>.jpg`; the app stores only the public URL in
+`media` rows. **No `select` policy** — a public bucket serves object URLs without one, and the
+`select` policy was dropped 2026-07-08 because it let anyone with the anon key *list* every file
+(Supabase advisor `public_bucket_allows_listing`). Note: object **delete** needs a `select` policy
+to locate the object first, so the `delete` policy is currently inert; if you add storage-object
+GC on photo removal later, re-add a scoped `select` policy alongside it. `locations_view` is
+`security_invoker = true` (advisor fix — keep it that way if the view is ever recreated).
+
+**Known advisor findings that are NOT fixable from SQL (accepted):** `spatial_ref_sys` RLS-disabled
+(ERROR), `postgis` extension-in-public, and 6× `st_estimatedextent` SECURITY DEFINER are all PostGIS
+objects owned by `supabase_admin`; the `postgres` role (MCP, dashboard SQL editor, and CLI all use
+it) cannot `ALTER`/`REVOKE`/enable-RLS on them — attempts silently no-op. `spatial_ref_sys` is the
+public EPSG coordinate registry (non-sensitive reference data) and this set appears on every
+PostGIS-on-Supabase project. Acknowledge them in the dashboard Advisor, or accept. The 5×
+`rls_policy_always_true` warnings are the app's intentional allow-all single-user policies.
 
 ### Seeded data (already in Supabase)
 
