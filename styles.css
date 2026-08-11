@@ -47,6 +47,10 @@ textarea { resize: vertical; }
 
 .list { flex: 1; overflow-y: auto; padding: 4px 10px 10px; }
 .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 30px 16px; line-height: 1.5; }
+/* the server's own reason under a load failure — quieter than the message, but readable,
+   because "NEON_DATABASE_URL is not set" needs a different fix than "you're offline" */
+.err-detail { display: inline-block; margin-top: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; color: var(--muted); opacity: .8; word-break: break-word; }
 
 .card {
   background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--idea);

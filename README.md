@@ -9,15 +9,26 @@ later feed a public website and to be queried while writing the script.
 
 ![status: working prototype](https://img.shields.io/badge/status-prototype-blue)
 
+**Live:** https://scarborough-film-map.pages.dev (installable PWA — works offline in the field)
+
 ## Run it
 
 ```bash
-# from this project folder
-python3 -m http.server 8138
-# open http://localhost:8138
+./dev.sh
 ```
 
-No build step, no install — Leaflet loads from a CDN.
+Opens http://localhost:8138. Still no build step and no install — Leaflet loads from a CDN — but
+the data now comes from a Cloudflare Pages Function (`functions/api/`), and only Wrangler can run
+one, so this replaced `python3 -m http.server`. A plain static server will render the map and then
+fail every read and write.
+
+`dev.sh` needs `.dev.vars` (gitignored) holding the database credential:
+
+```bash
+echo 'NEON_DATABASE_URL="<connection string>"' > .dev.vars
+```
+
+Get the string from `.neon`, or `npx neonctl connection-string --project-id lively-voice-91994065`.
 
 ## What it does
 
@@ -43,7 +54,36 @@ No build step, no install — Leaflet loads from a CDN.
 `data/scarborough.geojson` = the city's `neighbourhoods-4326.geojson` (WGS84) filtered to the
 30 Scarborough neighbourhoods, each with a centroid for label placement.
 
-## Data model (localStorage now)
+## Architecture
+
+```
+browser (index.html + app.js + sw.js)        no credential, no SDK
+   │  fetch api/db, api/locations, api/photo …  (same-origin)
+   ▼
+functions/api/[[route]].js                   Cloudflare Pages Function
+   │  SQL over HTTP  ·  holds NEON_DATABASE_URL + the R2 binding
+   ▼
+Neon Postgres 18 + PostGIS                   R2 bucket (reference photos)
+```
+
+The browser talks only to its own origin. The database credential and the photo bucket live
+behind the Pages Function, which is why the schema needs no row-level security — under the
+previous Supabase setup the client shipped a public anon key, so every table needed an
+allow-all policy to be usable at all.
+
+| File | Purpose |
+|---|---|
+| `index.html` / `app.js` / `styles.css` | the whole client (vanilla JS + Leaflet, no framework) |
+| `functions/api/[[route]].js` | the entire backend — routes, SQL, R2 |
+| `sw.js` | offline strategies per resource type |
+| `schema.sql` | the database, re-appliable (`node tools/db-exec.mjs --file schema.sql`) |
+| `tools/neon.mjs` | Node-side Neon access for the scripts below |
+| `tools/db-exec.mjs` | run SQL against the database |
+| `tools/import-json.mjs` | load locations from a JSON export |
+
+## Data model
+
+In-memory shape, mapping 1:1 to the tables in `schema.sql`:
 
 ```js
 db = {
@@ -52,62 +92,67 @@ db = {
   locations: [ {
     id, projectId, createdAt,
     title, neighbourhood, status, category,          // status: idea|scouting|confirmed|shot
-    lat, lng,
-    shootDate, bestTime, parking, permit,            // permit: n/a|needed|requested|granted
-    contacts:   [ { name, role, detail } ],
-    interviews: [ { subject, role, status } ],       // status: idea|reaching out|scheduled|recorded
-    footage:    [ { label, notes } ],
-    photos:     [ url ],
+    lat, lng,                                        // from PostGIS geography via locations_view
+    shootDate, bestTime, parking, permit, address,   // permit: n/a|needed|requested|granted
+    contacts:   [ { id, name, role, detail } ],
+    interviews: [ { id, subject, role, status } ],   // status: idea|reaching out|scheduled|recorded
+    footage:    [ { id, label, notes } ],            // media rows, kind='footage'
+    photos:     [ url ],                             // media rows, kind='photo'
     notes,
   } ]
 }
 ```
 
-`loadDB()` / `save()` in `app.js` are the only storage seam — swap them for Supabase calls and
-nothing else changes. Neighbourhood tagging is a ray-casting point-in-polygon; the planner uses
-a haversine distance.
+`loadDB` / `saveLocation` / `deleteLocation` / `saveProject` / `renameProject` / `uploadPhoto`
+in `app.js` are the only storage seam. Neighbourhood tagging is a ray-casting point-in-polygon
+and the planner uses a haversine distance — both client-side, so they work offline.
 
-## Going to a real database (Supabase + PostGIS) — next step
+## Importing data
 
-```sql
-create extension if not exists postgis;
+`tools/import-json.mjs` takes the app's own **⭳ JSON** export, a raw row dump
+(`{ projects, locations, interviews, contacts, media }`), or a bare array of locations, in
+camelCase or snake_case:
 
-create table projects (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  created_at timestamptz default now()
-);
-
-create table locations (
-  id uuid primary key default gen_random_uuid(),
-  project_id uuid references projects(id) on delete cascade,
-  title text not null,
-  neighbourhood text,
-  status text default 'idea',
-  category text,
-  shoot_date date,
-  best_time text, parking text, permit text default 'n/a',
-  notes text,
-  geom geography(point, 4326) not null,            -- lng/lat
-  created_at timestamptz default now()
-);
-create index on locations using gist (geom);
-
--- child records (or keep as jsonb columns — your call)
-create table interviews (id uuid primary key default gen_random_uuid(),
-  location_id uuid references locations(id) on delete cascade,
-  subject text, role text, status text default 'idea');
-create table contacts (id uuid primary key default gen_random_uuid(),
-  location_id uuid references locations(id) on delete cascade,
-  name text, role text, detail text);
-create table media (id uuid primary key default gen_random_uuid(),
-  location_id uuid references locations(id) on delete cascade,
-  kind text,                                       -- 'footage' | 'photo'
-  label text, url text, notes text);
+```bash
+node tools/import-json.mjs my-film.json --dry     # preview
+node tools/import-json.mjs my-film.json
 ```
 
-The **"plan a shoot day"** query becomes one line of PostGIS — everything within a radius of an
-anchor location, ordered by distance:
+Re-running is safe — a location already in the target project with the same title and
+effectively the same coordinates (within ~1 m, via `ST_DWithin`) is skipped, not duplicated.
+
+## Deploy
+
+```bash
+./deploy.sh
+```
+
+Assembles the runtime files (plus `functions/`) into `dist/` and uploads to Cloudflare Pages.
+One-time setup on a fresh Pages project:
+
+```bash
+npx wrangler login
+npx wrangler pages secret put NEON_DATABASE_URL --project-name scarborough-film-map
+```
+
+Photos need R2 enabled on the account (dashboard → R2 → accept terms), then:
+
+```bash
+npx wrangler r2 bucket create scarborough-film-map-photos
+```
+
+and bind it as **PHOTOS** under Pages → Settings → Bindings. Until that's done, `/api/photo`
+returns a clear 503 and the rest of the app is unaffected.
+
+Note: the deployed URL is public — anyone who finds it can read and write, the same posture as
+the anon key it replaced. Cloudflare Access (Zero Trust, free tier) can gate it behind an email
+login if that changes.
+
+## PostGIS
+
+The geography column means the **"plan a shoot day"** query is one line of SQL when it ever
+needs to move server-side (it's currently a client-side haversine, which is what lets it work
+with no signal):
 
 ```sql
 select l.*, st_distance(l.geom, a.geom) as metres
@@ -118,13 +163,12 @@ where a.id = :anchor_id
 order by metres;
 ```
 
-This mirrors the Supabase PWA setup used by the House Chores app (a separate project at `~/Documents/Dev/tasks home`).
-
 ## Roadmap
 
 - [x] Map + Scarborough neighbourhoods + auto-tagging
 - [x] Projects, rich location records, shoot-day planner, responsive layout
-- [ ] Supabase + PostGIS backend (replace localStorage)
-- [ ] Offline PWA (installable, works without signal in the field)
-- [ ] Photo/file upload to Supabase Storage (vs. pasted URLs)
+- [x] Postgres + PostGIS backend (replaced localStorage)
+- [x] Offline PWA (installable, works without signal in the field)
+- [x] Photo upload to object storage (vs. pasted URLs)
+- [x] Script-writing export (locations → Markdown scene list)
 - [ ] Public website export from the same data

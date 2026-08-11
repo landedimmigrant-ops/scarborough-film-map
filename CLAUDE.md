@@ -11,9 +11,12 @@ The data feeds script-writing now and a public website later.
 
 Owner: Prem (documentary filmmaker). Single-user for now.
 
-## Current status (as of 2026-06-24)
+## Current status (as of 2026-08-11)
 
-**Working app with live Supabase backend.** All major features are done and syncing to the cloud.
+**Working app on a Neon (Postgres 18 + PostGIS) backend.** All major features are done and syncing
+to the cloud. Migrated off Supabase 2026-08-11 — its free tier idled the project into a
+Cloudflare 521 and took the data offline with it; Neon does not idle-delete. The 5 seeded
+locations were unrecoverable at migration time (see **Data recovery** below).
 
 ### What works end-to-end
 - Interactive map of Scarborough (OpenStreetMap **or Esri satellite** tiles + City of Toronto neighbourhood boundaries)
@@ -30,8 +33,9 @@ Owner: Prem (documentary filmmaker). Single-user for now.
 - Search across people/notes, filter by status/neighbourhood, stats bar
 - Responsive mobile layout, 📍 GPS capture button (also auto-names)
 - JSON export
-- **Supabase + PostGIS backend** (live, connected, data in the cloud)
-- 5 real locations seeded in Supabase (see below)
+- **Neon Postgres + PostGIS backend** behind a same-origin Cloudflare Pages Function
+  (`functions/api/[[route]].js`) — the browser holds no credential at all
+- **Reference photos in Cloudflare R2**, served through `/api/photo/<key>`
 
 ### Two map modes (interaction model)
 - **Mark mode (default):** click anywhere → drop + auto-name a pin. Drag the pin to fine-tune (re-identifies on drop).
@@ -51,9 +55,9 @@ An 8-cycle heuristic audit produced a prioritized backlog in [`docs/usability-lo
 (see the `keydown` handler + `captureFocus`/`restoreFocus`); `:focus-visible` rings; on mobile, tap targets are
 ≥44px and the map toggles dock into the map band instead of floating over the list.
 **Shipped 2026-07-01 (Cycle 9 — data honesty & edit safety):** startup shows "Loading your locations…"
-and a Supabase load failure shows an error + ↻ Retry (never a false "no locations yet"); Save disables
+and a backend load failure shows an error + ↻ Retry (never a false "no locations yet"); Save disables
 to "Saving…" and a failed save/delete alerts and keeps the editor open (`saveDetail`/`removeLoc` check
-the Supabase result); the `dirtyEdit` flag guards unsaved edits with a discard confirm on Esc / ✕ /
+the write result); the `dirtyEdit` flag guards unsaved edits with a discard confirm on Esc / ✕ /
 card-switch / planner / map-click (only real user input marks it dirty — programmatic auto-fill doesn't);
 an on-map "Explore mode" pill (`#mode-pill`) shows while explore is active; list cards show a 🗓
 shoot-date chip. Only backlog #8 (collapse editor logistics) remains — see the log.
@@ -69,32 +73,56 @@ contacts, footage, notes), which is the "script-writing export" roadmap item.
 
 ### What's next
 - [x] Offline PWA — shipped 2026-07-02: `manifest.webmanifest` + `icons/` + `sw.js` (shell/data
-      precached network-first; tiles cache-first LRU-capped; Supabase GETs network-first with
-      cached fallback = last-known locations offline; writes never intercepted). **Hosted on
+      precached network-first; tiles cache-first LRU-capped; `GET /api/db` network-first with
+      cached fallback = last-known locations offline; `/api/photo/*` cache-first; writes never
+      intercepted). **Hosted on
       Cloudflare Pages 2026-07-02** → https://scarborough-film-map.pages.dev (see Deploy section).
       **Remaining:** install on the phone (Add to Home Screen) + airplane-mode field test.
-- [x] Photo/file upload to Supabase Storage — shipped 2026-07-02: 📤 Upload in the editor
-      (multi-select, client-side 1600px JPEG compression, public `photos` bucket; URL flows into
-      the existing media-row persistence). Follow-up idea: GC storage objects on photo removal.
+- [x] Photo/file upload — shipped 2026-07-02 (Supabase Storage), moved to **Cloudflare R2**
+      2026-08-11: 📤 Upload in the editor (multi-select, client-side 1600px JPEG compression;
+      URL flows into the existing media-row persistence). Follow-up idea: GC storage objects on
+      photo removal. **Blocked on Prem:** R2 must be enabled once in the Cloudflare dashboard.
+- [x] Off Supabase onto Neon — shipped 2026-08-11 (see the Neon section). **Remaining:** enable R2,
+      set the production `NEON_DATABASE_URL` secret, redeploy, re-test the installed PWA.
 - [ ] Public website export / embed from the same data
 - [x] Script-writing export (locations → scene list) — shipped 2026-07-01 as the 📝 Scenes Markdown export
 
 ## Run / verify
 
 ```bash
-python3 -m http.server 8138      # from this folder → http://localhost:8138
+./dev.sh                         # → http://localhost:8138
 ```
-No build step, no install. Leaflet 1.9.4 + Supabase JS v2 load from CDN.
-There's a `.claude/launch.json` (server name `scarborough-film-map`, port 8138).
+
+`dev.sh` runs `wrangler pages dev` on the repo root. **`python3 -m http.server` no longer works**
+for anything but static rendering: the app's data comes from a Pages Function, and only Wrangler
+can run one. There's a `.claude/launch.json` (server name `scarborough-film-map`, port 8138) that
+invokes the same thing.
+
+Requires `.dev.vars` (gitignored) with `NEON_DATABASE_URL="postgresql://…"`. The bucket binding
+is mounted locally as a *simulated* R2 (`--r2 PHOTOS`), so dev uploads never touch the real one.
+
+No build step; Leaflet 1.9.4 loads from CDN. There is no npm dependency anywhere — the Function
+and `tools/*.mjs` both speak Neon's SQL-over-HTTP protocol with plain `fetch`.
+
+Handy checks:
+
+```bash
+node tools/db-exec.mjs "select count(*) from locations"
+node tools/db-exec.mjs --file schema.sql        # re-apply schema (idempotent)
+```
 
 ## Deploy (Cloudflare Pages)
 
 - **Live:** https://scarborough-film-map.pages.dev (HTTPS → the PWA installs on the phone)
-- `./deploy.sh` — copies only the runtime files into `dist/` (CLAUDE.md/docs stay off the public
-  site; unknown paths fall back to index.html) and runs `wrangler pages deploy`
+- `./deploy.sh` — copies the runtime files **plus `functions/`** into `dist/` (CLAUDE.md, docs/,
+  schema.sql, tools/ stay off the public site) and runs `wrangler pages deploy`.
+  Forgetting `functions/` deploys an app whose every `/api/*` call 404s — that's why the copy is
+  in the script rather than left to muscle memory.
 - Auth: `npx wrangler login` (one-time, browser OAuth). Project `scarborough-film-map`, production branch `main`
-- Note: the URL is public — anyone who finds it can use the app (same single-user posture as the
-  anon key). Cloudflare Access (Zero Trust, free tier) can gate it behind an email login if wanted.
+- **The production secret is set once, out of band:**
+  `npx wrangler pages secret put NEON_DATABASE_URL --project-name scarborough-film-map`
+- Note: the URL is public — anyone who finds it can read and write, the same posture as the old
+  anon key. Cloudflare Access (Zero Trust, free tier) can gate it behind an email login if wanted.
 
 ## Repo
 
@@ -109,7 +137,13 @@ Vanilla JS + Leaflet. No framework, no bundler. Files:
 | File | Purpose |
 |---|---|
 | `index.html` | Shell: sidebar + map pane + two slide-over panels (editor, planner) |
-| `app.js` | All logic (~500 lines, sectioned with comments) |
+| `app.js` | All client logic (sectioned with comments); the `/api/*` client is at the top |
+| `functions/api/[[route]].js` | The entire backend: routes, SQL over HTTP, R2 photo put/get |
+| `schema.sql` | The database, re-appliable: `node tools/db-exec.mjs --file schema.sql` |
+| `tools/neon.mjs` | Node-side Neon access (dependency-free) shared by the scripts below |
+| `tools/db-exec.mjs` | Run SQL / apply schema.sql |
+| `tools/import-json.mjs` | Load locations from a JSON export — the data-recovery path |
+| `dev.sh` / `deploy.sh` | Local Wrangler dev server / Pages deploy |
 | `styles.css` | Dark theme, responsive (mobile breakpoint 720px) |
 | `sw.js` | Service worker — offline strategies per resource type (see file header comment) |
 | `manifest.webmanifest` + `icons/` | PWA install metadata + app icons (regenerable with PIL — pin motif, app palette) |
@@ -121,11 +155,13 @@ Vanilla JS + Leaflet. No framework, no bundler. Files:
 
 | Function | What it does |
 |---|---|
-| `loadDB()` | Async — loads all projects + locations + child records from Supabase |
-| `saveLocation(loc)` | Async — upsert location + delete/re-insert child records |
-| `deleteLocation(id)` | Async — delete from Supabase |
-| `saveProject(proj)` | Async — insert new project |
-| `migrateLocalStorage()` | One-time — moves old localStorage pins into Supabase, then clears localStorage |
+| `api(path, opts)` | The only network seam to the backend — same-origin `fetch` to `/api/*`, throws with the server's own message; `lastApiError` holds the latest so alerts can say *why* |
+| `loadDB()` | Async — one `GET /api/db` → projects + locations + child records |
+| `saveLocation(loc)` | Async — one `POST /api/locations`; row + all children in a single transaction |
+| `deleteLocation(id)` | Async — `DELETE /api/locations/<id>` |
+| `saveProject(proj)` / `renameProject(id, name)` | Async — `POST` / `PATCH /api/projects` |
+| `uploadPhoto(file)` | Async — compress → `POST /api/photo` → relative `/api/photo/<key>` URL |
+| `migrateLocalStorage()` | One-time — moves old localStorage pins into Postgres. **Only clears localStorage if every write succeeded** — a partial failure keeps it, since it may be the last copy |
 | `findHood(lat, lng)` | Ray-casting point-in-polygon → neighbourhood name string |
 | `distKm(a, b)` | Haversine distance between two {lat, lng} objects |
 | `openDetail(loc, isNew)` | Opens the rich location editor slide-over panel |
@@ -138,14 +174,14 @@ Vanilla JS + Leaflet. No framework, no bundler. Files:
 | `exploreAt(latlng)` | Explore mode — combined neighbourhood blurb + nearest Wikipedia landmark popup |
 | `fetchNearestWiki(lat, lng)` | Wikipedia geosearch + summary → `{ title, short, url, others }` |
 
-### Data model (in-memory shape, maps 1:1 to Supabase)
+### Data model (in-memory shape, maps 1:1 to the Postgres tables)
 
 ```js
 db = {
   projects: [ { id, name, createdAt } ],
   activeProjectId,
   locations: [ {
-    id,           // uuid (from Supabase)
+    id,           // uuid (server-generated)
     projectId,    // → projects.id
     createdAt,
     title, neighbourhood, status, category,
@@ -154,71 +190,92 @@ db = {
     contacts:   [ { id, name, role, detail } ],
     interviews: [ { id, subject, role, status } ],
     footage:    [ { id, label, notes } ],
-    photos:     [ url ],   // stored as media rows with kind='photo'
+    photos:     [ url ],   // media rows, kind='photo'; url is /api/photo/<r2-key>
     notes,
   } ]
 }
 ```
 
-## Supabase
+## Neon (the database)
 
-- **Project ref:** `hflalatfowksnggygulz`
-- **URL:** `https://hflalatfowksnggygulz.supabase.co`
-- **MCP:** configured in `.mcp.json` (project-scoped) — run `/mcp` → supabase → Authenticate if needed
-- **Anon key:** in `app.js` lines 7-8 (safe to be in client code — this is the public anon key)
-- **Agent skills:** installed in `.agents/skills/` (supabase + postgres-best-practices), symlinked for Claude Code. Re-install with `npx skills add supabase/agent-skills` if the `.agents/` folder is missing.
+- **Project:** `scarborough-film-map` — id `lively-voice-91994065`, org `org-lingering-shadow-80581799`
+- **Region/version:** aws-us-east-1, Postgres 18 + PostGIS
+- **Connection string:** `.neon` (gitignored) and `.dev.vars` (gitignored) locally; in production a
+  Pages secret named `NEON_DATABASE_URL`. **It is never in client code** — that's the whole point of
+  the Pages Function. Don't paste it into `app.js`, a doc, or a commit.
+- CLI: `npx neonctl … --org-id org-lingering-shadow-80581799` (it prompts interactively without the org)
+- Schema lives in `schema.sql` and is idempotent: `node tools/db-exec.mjs --file schema.sql`
 
-### Supabase schema (already created)
+### Why the Pages Function exists
 
-```sql
--- PostGIS enabled
-create table projects (id uuid primary key default gen_random_uuid(), name text not null, created_at timestamptz default now());
+A browser can't speak Postgres, so reads/writes go through `functions/api/[[route]].js`:
 
-create table locations (
-  id uuid primary key default gen_random_uuid(),
-  project_id uuid references projects(id) on delete cascade,
-  title text not null, neighbourhood text, status text default 'idea', category text,
-  shoot_date date, best_time text, parking text, permit text default 'n/a', notes text,
-  address text,                       -- reverse-geocoded street address (auto-filled on click)
-  geom geography(point, 4326) not null,
-  created_at timestamptz default now()
-);
-create index on locations using gist(geom);
+| Route | Does |
+|---|---|
+| `GET /api/db` | whole snapshot: projects + locations + interviews + contacts + media (one request) |
+| `POST /api/locations` | create **or** update one location and all its child rows, in one transaction |
+| `DELETE /api/locations/<id>` | delete (children cascade) |
+| `POST /api/projects` · `PATCH /api/projects/<id>` | create / rename |
+| `POST /api/photo?project=<id>` | raw image body → R2 → `{ url: "/api/photo/<key>" }` |
+| `GET /api/photo/<key>` | serve from R2, `immutable` (keys are uuids) |
 
--- App reads through this view; it exposes lat/lng (and address) from the geography column.
--- If you add a column to locations that the app needs, recreate this view to include it.
-create or replace view locations_view as
-  select id, project_id, title, neighbourhood, status, category,
-         shoot_date, best_time, parking, permit, notes, created_at,
-         st_y(geom::geometry) as lat, st_x(geom::geometry) as lng, address
-  from locations;
+Three things about it worth not re-deriving:
 
-create table interviews (id uuid primary key default gen_random_uuid(), location_id uuid references locations(id) on delete cascade, subject text, role text, status text default 'idea');
-create table contacts (id uuid primary key default gen_random_uuid(), location_id uuid references locations(id) on delete cascade, name text, role text, detail text);
-create table media (id uuid primary key default gen_random_uuid(), location_id uuid references locations(id) on delete cascade, kind text, label text, url text, notes text);
+1. **No RLS, deliberately.** Under Supabase the client held a public anon key, so every table
+   needed an allow-all policy. Here the client holds nothing and the Function is the trust
+   boundary, so policies would be pure ceremony.
+2. **Location ids are generated in the Function**, not by `gen_random_uuid()`, because a Neon HTTP
+   batch can't read statement 1's output — the child-row inserts need the id up front to go in the
+   same transaction.
+3. **Every timestamp leaves as strict ISO-8601** via the `ISO()` helper. Neon's HTTP layer returns
+   Postgres' own text form (`2026-08-11 23:31:10.910294+00` — space, no `T`), which Chrome parses
+   and **Safari does not**. Unfixed, that silently makes `createdAt` NaN on the iPhone PWA. If you
+   add a timestamp column the app reads, wrap it in `ISO()`.
+
+### Storage (Cloudflare R2)
+
+Bucket `scarborough-film-map-photos`, bound as **PHOTOS**. Keys are `<project_id>/<uuid>.<ext>`;
+the database stores only the relative `/api/photo/<key>` URL, so it survives a host change and the
+service worker can cache it as a same-origin request.
+
+**⚠️ Not enabled yet.** R2 has to be switched on once from the Cloudflare dashboard (R2 → accept
+terms) before `wrangler r2 bucket create` works. Until then `/api/photo` returns a clear 503 —
+"photo storage is not configured" — which the editor surfaces verbatim, and nothing else is
+affected. Steps are in the README's Deploy section.
+
+Follow-up idea (unchanged from the Supabase era): garbage-collect the R2 object when a photo row
+is removed. Nothing deletes objects today.
+
+### Data recovery
+
+The 5 seeded locations (Guild Park, UTSC quad, Rouge Beach, Cathedral Bluffs, STC atrium) lived
+only in the paused Supabase project and were **not recoverable at migration time** — the REST host
+returned Cloudflare 521 and the pooler timed out. Their titles/neighbourhoods/statuses are recorded
+below; their coordinates are not, and were deliberately not invented.
+
+If a copy ever surfaces (a restored Supabase project, a phone still holding a JSON export, an old
+`⭳ JSON` download), load it with:
+
+```bash
+node tools/import-json.mjs <file>.json --dry     # preview first
+node tools/import-json.mjs <file>.json
 ```
 
-**Storage (added 2026-07-02):** public bucket `photos` with anon `insert` + `delete` policies
-scoped to `bucket_id = 'photos'` (single-user posture, same as the allow-all table policies).
-Uploaded photos live at `photos/<project_id>/<rand>.jpg`; the app stores only the public URL in
-`media` rows. **No `select` policy** — a public bucket serves object URLs without one, and the
-`select` policy was dropped 2026-07-08 because it let anyone with the anon key *list* every file
-(Supabase advisor `public_bucket_allows_listing`). Note: object **delete** needs a `select` policy
-to locate the object first, so the `delete` policy is currently inert; if you add storage-object
-GC on photo removal later, re-add a scoped `select` policy alongside it. `locations_view` is
-`security_invoker = true` (advisor fix — keep it that way if the view is ever recreated).
+It reads the app's own export shape, a raw row dump, or a bare array, in camelCase or snake_case,
+and re-running is safe (same title + within 1 m ⇒ skipped, via `ST_DWithin`). Photo URLs pointing
+at the retired Supabase bucket are imported but flagged — they won't load, so re-upload those.
 
-**Known advisor findings that are NOT fixable from SQL (accepted):** `spatial_ref_sys` RLS-disabled
-(ERROR), `postgis` extension-in-public, and 6× `st_estimatedextent` SECURITY DEFINER are all PostGIS
-objects owned by `supabase_admin`; the `postgres` role (MCP, dashboard SQL editor, and CLI all use
-it) cannot `ALTER`/`REVOKE`/enable-RLS on them — attempts silently no-op. `spatial_ref_sys` is the
-public EPSG coordinate registry (non-sensitive reference data) and this set appears on every
-PostGIS-on-Supabase project. Acknowledge them in the dashboard Advisor, or accept. The 5×
-`rls_policy_always_true` warnings are the app's intentional allow-all single-user policies.
+### What was lost / kept in the migration
 
-### Seeded data (already in Supabase)
+- **Kept:** every table, column and relationship; the PostGIS `geography(point,4326)` column and
+  its GiST index; the `locations_view` lat/lng seam; all app behaviour.
+- **Added:** a `position` column on `interviews`/`contacts`/`media` so editor row order survives a
+  save (the old delete-then-reinsert relied on Postgres returning rows in insertion order, which it
+  doesn't promise); one-request snapshot reads; one-transaction writes.
+- **Dropped:** the RLS policies (see above), Supabase Storage, the `supabase-js` CDN script,
+  `.mcp.json` (the Supabase MCP server), and the anon key that used to sit in `app.js`.
 
-Project: **"Untitled film"** (`3101dbd1-0df4-41d9-a7bd-04c0f3e8e646`)
+### Seeded data (titles only — coordinates were lost with the Supabase project)
 
 | Location | Neighbourhood | Status |
 |---|---|---|
@@ -228,7 +285,7 @@ Project: **"Untitled film"** (`3101dbd1-0df4-41d9-a7bd-04c0f3e8e646`)
 | Cathedral Bluffs lookout | Cliffcrest | Idea |
 | STC interior atrium | Bendale-Glen Andrew | Scouting |
 
-Guild Park also has a contact (Toronto Film Office) and an interview (Mr. Spencer, park historian).
+Guild Park also had a contact (Toronto Film Office) and an interview (Mr. Spencer, park historian).
 
 ## Open data licences (keep attributions)
 
@@ -237,7 +294,14 @@ Guild Park also has a contact (Toronto Film Office) and an interview (Mr. Spence
 
 ## Conventions
 
-- Keep it dependency-light and framework-free unless there's a strong reason.
-- `.claude/` is gitignored (local workspace config). `.agents/` is gitignored (re-installable).
+- Keep it dependency-light and framework-free unless there's a strong reason. There is currently
+  **zero** npm dependency — the backend and `tools/*.mjs` both use plain `fetch` against Neon's
+  SQL-over-HTTP endpoint rather than `@neondatabase/serverless`. Adding a bundler to this repo
+  should be a deliberate decision, not a side effect of reaching for a driver.
+- **Never commit a connection string.** `.neon` and `.dev.vars` are gitignored; production reads a
+  Pages secret. If one leaks, rotate it: `npx neonctl roles reset-password neondb_owner …`.
+- `.claude/` is gitignored (local workspace config). `.agents/` is gitignored (re-installable from
+  `skills-lock.json`: `npx skills add neondatabase/agent-skills`). The lockfile still lists the
+  Supabase skills from the old backend — harmless, and safe to drop whenever.
 - The 2 MB `toronto-neighbourhoods.geojson` source is gitignored (re-downloadable per README).
 - Verify UI changes with preview tools before calling done.

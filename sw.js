@@ -4,15 +4,21 @@
      so the whole app works with no signal; network-first keeps local dev + deploys fresh)
    - CDN libs (unpkg): stale-while-revalidate
    - map tiles (OSM / Esri): cache-first with an LRU cap — recently viewed areas work offline
-   - Supabase REST GETs: network-first → cached fallback (last-known locations offline);
-     writes are never intercepted — the app itself alerts honestly when a save fails
+   - GET /api/db: network-first → cached fallback (last-known locations offline). Since the
+     Neon migration this is ONE entry holding the whole snapshot, so the offline copy can no
+     longer be a half-set of five Supabase queries that disagree with each other.
+     Writes are never intercepted — the app itself alerts honestly when a save fails.
+   - GET /api/photo/<key>: cache-first under the tile cap — R2 keys are uuids, so a cached
+     photo is never stale, and reference shots stay visible in the field with no signal
    - Nominatim / Overpass / Wikipedia: network only (usage policies + the app degrades gracefully) */
-const VERSION = "sfm-v1";
+const VERSION = "sfm-v2";   // bumped by the Supabase→Neon migration: old caches hold dead API URLs
 const SHELL = `${VERSION}-shell`;
 const CDN = `${VERSION}-cdn`;
 const TILES = `${VERSION}-tiles`;
 const API = `${VERSION}-api`;
+const PHOTOS = `${VERSION}-photos`;
 const TILE_CAP = 400;
+const PHOTO_CAP = 300;
 
 const PRECACHE = [
   "./", "index.html", "styles.css", "app.js", "manifest.webmanifest",
@@ -22,7 +28,6 @@ const PRECACHE = [
 const CDN_PRECACHE = [
   "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css",
   "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js",
-  "https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js",
 ];
 
 self.addEventListener("install", (e) => {
@@ -96,13 +101,17 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return; // writes always hit the network
   const url = new URL(req.url);
-  if (url.origin === location.origin) { e.respondWith(networkFirst(req, SHELL, true)); return; }
+  if (url.origin === location.origin) {
+    // The API is same-origin now (it was supabase.co before the Neon migration), so
+    // these two must be tested BEFORE the app-shell branch below — otherwise data
+    // and photos land in the shell cache under shell rules.
+    if (url.pathname.startsWith("/api/photo/")) { e.respondWith(cacheFirstCapped(req, PHOTOS, PHOTO_CAP)); return; }
+    if (url.pathname.startsWith("/api/")) { e.respondWith(networkFirst(req, API)); return; }
+    e.respondWith(networkFirst(req, SHELL, true)); return;
+  }
   if (url.hostname === "unpkg.com") { e.respondWith(staleWhileRevalidate(req, CDN)); return; }
   if (url.hostname === "tile.openstreetmap.org" || url.hostname === "server.arcgisonline.com") {
     e.respondWith(cacheFirstCapped(req, TILES, TILE_CAP)); return;
-  }
-  if (url.hostname.endsWith(".supabase.co") && url.pathname.startsWith("/rest/")) {
-    e.respondWith(networkFirst(req, API)); return;
   }
   // anything else (Nominatim, Wikipedia, …) falls through to the network untouched
 });

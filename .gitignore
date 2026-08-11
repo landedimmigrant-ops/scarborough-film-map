@@ -12,5 +12,13 @@
 # from City of Toronto Open Data (URL in README). Not needed at runtime.
 data/toronto-neighbourhoods.geojson
 
-# Cloudflare Pages deploy artifact
+# Cloudflare Pages deploy artifact + local wrangler state (incl. the simulated R2 bucket)
 dist/
+.wrangler/
+
+# Database credentials — NEVER commit these.
+# .neon      : the Neon connection string, used by tools/*.mjs
+# .dev.vars  : the same string, read by `wrangler pages dev` for local /api/* calls
+# In production the string lives only in a Pages secret (see README).
+.neon
+.dev.vars

@@ -1,12 +1,11 @@
-/* Scarborough Film Map — v3 (Supabase + PostGIS)
+/* Scarborough Film Map — v4 (Neon Postgres + PostGIS, via same-origin /api/*)
    A documentary-organizing tool: projects -> locations -> footage / interviews / logistics,
    plus a proximity "plan a shoot day" generator.
    Base map: OpenStreetMap (ODbL). Boundaries: City of Toronto Open Data (158 neighbourhoods).
-   Storage: Supabase (PostGIS geography). Auto-migrates localStorage data on first load. */
-
-const SUPABASE_URL = "https://hflalatfowksnggygulz.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhmbGFsYXRmb3drc25nZ3lndWx6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzMjE1NzQsImV4cCI6MjA5Nzg5NzU3NH0.KFYSPtb5Ri3BgIS3I3Ne-tZxPuZPT43P6GKdWl44OAE";
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+   Storage: Neon (PostGIS geography) behind functions/api/[[route]].js — a Cloudflare Pages
+   Function that holds the database credential so this file never has to. Migrated off
+   Supabase 2026-08-11 after its free tier idled the project offline.
+   Auto-migrates localStorage data on first load. */
 
 const STORE_KEY = "scarborough_shoots_v2";
 const V1_KEY = "scarborough_shoots_v1";
@@ -31,7 +30,41 @@ function blankLoc() {
   };
 }
 
-/* --- Supabase ↔ in-memory shape helpers --- */
+/* ---------- /api/* client ----------
+   Every call goes to the same-origin Pages Function; there is no key or token
+   here by design. Errors are surfaced as thrown Errors carrying the server's
+   own message, and each data function below catches them and returns the same
+   null/false the Supabase versions did — so the callers (saveDetail, removeLoc)
+   keep their existing "keep the editor open and tell the truth" behaviour.
+   lastApiError holds the most recent message so those alerts can say why. */
+let lastApiError = "";
+
+async function api(path, { method = "GET", body, raw, contentType } = {}) {
+  const init = { method, headers: {} };
+  if (raw !== undefined) {
+    init.body = raw;
+    init.headers["Content-Type"] = contentType || "application/octet-stream";
+  } else if (body !== undefined) {
+    init.body = JSON.stringify(body);
+    init.headers["Content-Type"] = "application/json";
+  }
+  const res = await fetch(`api/${path}`, init);
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { /* non-JSON — handled below */ }
+  if (!res.ok) {
+    const msg = (data && data.error) || `${res.status} ${res.statusText}` || "request failed";
+    throw new Error(msg);
+  }
+  return data;
+}
+
+function apiFailed(where, err) {
+  lastApiError = err && err.message ? err.message : String(err);
+  console.error(`${where}:`, err);
+}
+
+/* --- row ↔ in-memory shape helpers --- */
 function rowToLoc(row, interviews, contacts, media) {
   return {
     id: row.id,
@@ -57,119 +90,59 @@ function rowToLoc(row, interviews, contacts, media) {
 }
 
 async function loadDB() {
-  // Load projects
-  const { data: projects, error: pErr } = await sb.from("projects").select("*").order("created_at");
-  if (pErr) { console.error("loadDB projects:", pErr); return null; }
-
-  if (!projects.length) {
-    // First run — create a default project
-    const { data: newP, error: npErr } = await sb.from("projects").insert({ name: "Untitled film" }).select().single();
-    if (npErr) { console.error("create default project:", npErr); return null; }
-    return { projects: [{ id: newP.id, name: newP.name, createdAt: new Date(newP.created_at).getTime() }], activeProjectId: newP.id, locations: [] };
-  }
-
-  // Load locations via the view that exposes lat/lng from the geography column
-  const { data: locs, error: lErr } = await sb.from("locations_view")
-    .select("*")
-    .order("created_at");
-  if (lErr) { console.error("loadDB locations:", lErr); return null; }
-
-  // Load child records
-  const locIds = locs.map((l) => l.id);
-  const [ivRes, coRes, meRes] = await Promise.all([
-    sb.from("interviews").select("*").in("location_id", locIds.length ? locIds : [""]),
-    sb.from("contacts").select("*").in("location_id", locIds.length ? locIds : [""]),
-    sb.from("media").select("*").in("location_id", locIds.length ? locIds : [""]),
-  ]);
+  // One request returns the whole snapshot — projects, locations (lat/lng already
+  // decoded out of the geography column by locations_view) and every child row.
+  // Five round trips became one, which also makes the service worker's offline
+  // copy a single cache entry instead of five that could disagree.
+  let snap;
+  try { snap = await api("db"); }
+  catch (e) { apiFailed("loadDB", e); return null; }
 
   const byLoc = (rows, lid) => (rows || []).filter((r) => r.location_id === lid);
-  const locations = locs.map((row) => {
-    row.lat = parseFloat(row.lat);
-    row.lng = parseFloat(row.lng);
-    return rowToLoc(row, byLoc(ivRes.data, row.id), byLoc(coRes.data, row.id), byLoc(meRes.data, row.id));
+  const locations = (snap.locations || []).map((row) => {
+    row.lat = Number(row.lat);
+    row.lng = Number(row.lng);
+    return rowToLoc(row, byLoc(snap.interviews, row.id), byLoc(snap.contacts, row.id), byLoc(snap.media, row.id));
   });
 
-  const dbObj = {
-    projects: projects.map((p) => ({ id: p.id, name: p.name, createdAt: new Date(p.created_at).getTime() })),
-    activeProjectId: projects[0].id,
-    locations,
-  };
-  return dbObj;
+  const projects = (snap.projects || []).map((p) => ({ id: p.id, name: p.name, createdAt: new Date(p.created_at).getTime() }));
+  if (!projects.length) { apiFailed("loadDB", new Error("no projects returned")); return null; }
+
+  return { projects, activeProjectId: projects[0].id, locations };
 }
 
 async function saveLocation(loc) {
-  // Upsert the location row
-  const row = {
-    title: loc.title,
-    project_id: loc.projectId,
-    neighbourhood: loc.neighbourhood,
-    status: loc.status,
-    category: loc.category,
-    shoot_date: loc.shootDate || null,
-    best_time: loc.bestTime || null,
-    parking: loc.parking || null,
-    permit: loc.permit,
-    notes: loc.notes || null,
-    address: loc.address || null,
-    geom: `SRID=4326;POINT(${loc.lng} ${loc.lat})`,
-  };
-
-  let locId = loc.id;
-  if (locId) {
-    // Update existing
-    const { error } = await sb.from("locations").update(row).eq("id", locId);
-    if (error) { console.error("update location:", error); return null; }
-  } else {
-    // Insert new
-    const { data, error } = await sb.from("locations").insert(row).select().single();
-    if (error) { console.error("insert location:", error); return null; }
-    locId = data.id;
-    loc.id = locId;
-    loc.createdAt = new Date(data.created_at).getTime();
-  }
-
-  // Sync child records: delete all then re-insert (simple for a single-user app)
-  await Promise.all([
-    sb.from("interviews").delete().eq("location_id", locId),
-    sb.from("contacts").delete().eq("location_id", locId),
-    sb.from("media").delete().eq("location_id", locId),
-  ]);
-
-  const childInserts = [];
-  if (loc.contacts.length) {
-    childInserts.push(sb.from("contacts").insert(loc.contacts.map((c) => ({ location_id: locId, name: c.name, role: c.role, detail: c.detail }))));
-  }
-  if (loc.interviews.length) {
-    childInserts.push(sb.from("interviews").insert(loc.interviews.map((i) => ({ location_id: locId, subject: i.subject, role: i.role, status: i.status }))));
-  }
-  const mediaRows = [];
-  (loc.footage || []).forEach((f) => mediaRows.push({ location_id: locId, kind: "footage", label: f.label, notes: f.notes }));
-  (loc.photos || []).filter(Boolean).forEach((url) => mediaRows.push({ location_id: locId, kind: "photo", url }));
-  if (mediaRows.length) childInserts.push(sb.from("media").insert(mediaRows));
-
-  await Promise.all(childInserts);
-  return locId;
+  // The whole record (row + contacts + interviews + footage + photos) goes over
+  // in one POST and lands in one Postgres transaction — so a half-saved
+  // location, which the old delete-then-reinsert-over-5-requests could leave
+  // behind if the connection dropped mid-save, is no longer possible.
+  let out;
+  try { out = await api("locations", { method: "POST", body: loc }); }
+  catch (e) { apiFailed("saveLocation", e); return null; }
+  if (!out || !out.id) { apiFailed("saveLocation", new Error("no id returned")); return null; }
+  loc.id = out.id;
+  if (out.createdAt) loc.createdAt = new Date(out.createdAt).getTime();
+  return out.id;
 }
 
 async function deleteLocation(id) {
-  const { error } = await sb.from("locations").delete().eq("id", id);
-  if (error) { console.error("delete location:", error); return false; }
-  return true;
+  try { await api(`locations/${encodeURIComponent(id)}`, { method: "DELETE" }); return true; }
+  catch (e) { apiFailed("deleteLocation", e); return false; }
 }
 
 async function saveProject(proj) {
   if (proj._isNew) {
-    const { data, error } = await sb.from("projects").insert({ name: proj.name }).select().single();
-    if (error) { console.error("insert project:", error); return null; }
-    return { id: data.id, name: data.name, createdAt: new Date(data.created_at).getTime() };
+    try {
+      const p = await api("projects", { method: "POST", body: { name: proj.name } });
+      return { id: p.id, name: p.name, createdAt: new Date(p.created_at).getTime() };
+    } catch (e) { apiFailed("saveProject", e); return null; }
   }
   return proj;
 }
 
 async function renameProject(id, name) {
-  const { error } = await sb.from("projects").update({ name }).eq("id", id);
-  if (error) { console.error("rename project:", error); return false; }
-  return true;
+  try { await api(`projects/${encodeURIComponent(id)}`, { method: "PATCH", body: { name } }); return true; }
+  catch (e) { apiFailed("renameProject", e); return false; }
 }
 
 // Legacy save() kept as a no-op so existing event handlers don't break during init
@@ -179,7 +152,7 @@ let db = { projects: [], activeProjectId: null, locations: [] };
 function activeProject() { return db.projects.find((p) => p.id === db.activeProjectId) || db.projects[0]; }
 function projectLocs() { return db.locations.filter((l) => l.projectId === db.activeProjectId); }
 
-/* ---------- migrate localStorage → Supabase ---------- */
+/* ---------- migrate localStorage → the database ---------- */
 async function migrateLocalStorage() {
   const raw = localStorage.getItem(STORE_KEY);
   if (!raw) return;
@@ -187,29 +160,36 @@ async function migrateLocalStorage() {
   try { old = JSON.parse(raw); } catch { return; }
   if (!old.locations || !old.locations.length) { localStorage.removeItem(STORE_KEY); return; }
 
-  console.log(`Migrating ${old.locations.length} location(s) from localStorage → Supabase…`);
+  console.log(`Migrating ${old.locations.length} location(s) from localStorage → Neon…`);
   const projMap = {};
 
-  // Create any localStorage projects that don't already exist in Supabase
+  // Create any localStorage projects that don't already exist in the database
   for (const op of (old.projects || [])) {
     const existing = db.projects.find((p) => p.name === op.name);
     if (existing) {
       projMap[op.id] = existing.id;
-    } else {
-      const { data, error } = await sb.from("projects").insert({ name: op.name }).select().single();
-      if (error) { console.error("migrate project:", error); continue; }
-      const p = { id: data.id, name: data.name, createdAt: new Date(data.created_at).getTime() };
-      db.projects.push(p);
-      projMap[op.id] = p.id;
+      continue;
     }
+    const p = await saveProject({ name: op.name, _isNew: true });
+    if (!p) { console.error("migrate project failed:", op.name, lastApiError); continue; }
+    db.projects.push(p);
+    projMap[op.id] = p.id;
   }
 
-  // Migrate locations
+  // Migrate locations. A failed write must NOT clear localStorage — that would
+  // destroy the only copy of the data, which is the whole reason this app left
+  // Supabase in the first place.
+  let failed = 0;
   for (const loc of old.locations) {
     loc.projectId = projMap[loc.projectId] || db.activeProjectId;
     loc.id = null; // force insert
-    await saveLocation(loc);
-    db.locations.push(loc);
+    if (await saveLocation(loc)) db.locations.push(loc);
+    else failed++;
+  }
+  if (failed) {
+    console.error(`Migration incomplete — ${failed} location(s) failed; localStorage kept so nothing is lost.`);
+    alert(`Couldn't move ${failed} saved location${failed === 1 ? "" : "s"} to the cloud. Nothing was deleted — reload to retry.`);
+    return;
   }
 
   // Clear localStorage so migration doesn't re-run
@@ -245,7 +225,7 @@ function fitWhenReady() {
 }
 new ResizeObserver(fitWhenReady).observe(map.getContainer());
 
-// Boot: load geojson + Supabase data in parallel, then render
+// Boot: load geojson + the /api/db snapshot in parallel, then render
 (async function boot() {
   const [geoRes, boundaryRes, dbRes, blurbsData] = await Promise.all([
     fetch("data/scarborough.geojson").then((r) => r.json()),
@@ -289,7 +269,7 @@ new ResizeObserver(fitWhenReady).observe(map.getContainer());
   fitWhenReady();
   buildHoodFilter();
 
-  // Set up Supabase data
+  // Set up the loaded data
   if (dbRes) { db = dbRes; }
   else { dbLoadFailed = true; }   // renderList shows a retry state instead of a false "no locations yet"
 
@@ -301,8 +281,11 @@ new ResizeObserver(fitWhenReady).observe(map.getContainer());
 
 function showLoadError() {
   document.getElementById("count").textContent = "—";
+  // Include the server's reason when there is one: "NEON_DATABASE_URL is not set"
+  // is a setup problem, not a connection problem, and the retry button won't fix it.
+  const why = lastApiError ? `<br><span class="err-detail">${esc(lastApiError)}</span>` : "";
   document.getElementById("list").innerHTML =
-    `<div class="empty">Couldn't load your locations — check your connection.<br><button class="btn ghost" id="retry-load" style="flex:none;margin-top:10px">↻ Retry</button></div>`;
+    `<div class="empty">Couldn't load your locations — check your connection.${why}<br><button class="btn ghost" id="retry-load" style="flex:none;margin-top:10px">↻ Retry</button></div>`;
   const rb = document.getElementById("retry-load");
   if (rb) rb.onclick = () => location.reload();
 }
@@ -474,7 +457,7 @@ function renderPhotos() {
   });
   wrap.appendChild(grid);
 }
-/* ---------- reference-photo upload (Supabase Storage, public "photos" bucket) ---------- */
+/* ---------- reference-photo upload (Cloudflare R2, via POST /api/photo) ---------- */
 // phones hand over 3–12 MB originals; a 1600px JPEG is plenty for scouting reference
 async function compressImage(file, maxDim = 1600, quality = 0.82) {
   const bmp = await createImageBitmap(file);
@@ -487,10 +470,16 @@ async function compressImage(file, maxDim = 1600, quality = 0.82) {
 }
 async function uploadPhoto(file) {
   const blob = await compressImage(file).catch(() => file);   // unreadable format → upload the original
-  const path = `${db.activeProjectId || "no-project"}/${rid("ph")}.jpg`;
-  const { error } = await sb.storage.from("photos").upload(path, blob, { contentType: "image/jpeg" });
-  if (error) throw error;
-  return sb.storage.from("photos").getPublicUrl(path).data.publicUrl;
+  // The function picks the key and returns a relative /api/photo/<key> URL, so the
+  // stored value stays portable across hosts and the service worker can cache it
+  // as a same-origin request.
+  const out = await api(`photo?project=${encodeURIComponent(db.activeProjectId || "no-project")}`, {
+    method: "POST",
+    raw: blob,
+    contentType: blob.type || "image/jpeg",
+  });
+  if (!out || !out.url) throw new Error("upload returned no url");
+  return out.url;
 }
 function pickAndUploadPhotos() {
   const inp = document.createElement("input");
@@ -500,7 +489,7 @@ function pickAndUploadPhotos() {
     if (!files.length) return;
     const btn = document.getElementById("add-photo-upload");
     if (btn) { btn.disabled = true; btn.textContent = "Uploading…"; }
-    let failed = 0;
+    let failed = 0, why = "";
     for (const f of files) {
       try {
         const url = await uploadPhoto(f);
@@ -508,11 +497,13 @@ function pickAndUploadPhotos() {
         editing.photos.push(url);
         dirtyEdit = true;
         renderPhotos();
-      } catch (e) { console.error("photo upload:", e); failed++; }
+      } catch (e) { console.error("photo upload:", e); failed++; why = why || (e && e.message) || ""; }
     }
     const b = document.getElementById("add-photo-upload");
     if (b) { b.disabled = false; b.textContent = "📤 Upload"; }
-    if (failed) alert(`Couldn't upload ${failed} photo${failed === 1 ? "" : "s"} — check your connection and try again.`);
+    // Show the server's actual reason — "photo storage is not configured" is a very
+    // different problem from a dropped connection, and guessing wastes the user's time.
+    if (failed) alert(`Couldn't upload ${failed} photo${failed === 1 ? "" : "s"}.${why ? `\n\n${why}` : " Check your connection and try again."}`);
   };
   inp.click();
 }
@@ -531,7 +522,7 @@ async function saveDetail() {
   const locId = await saveLocation(editing);
   if (!locId) {   // the cloud write failed — keep the editor open so nothing is lost
     if (btn) { btn.disabled = false; btn.textContent = "Save"; }
-    alert("Couldn't save — check your connection and try again. Your edits are still here.");
+    alert(`Couldn't save — your edits are still here.${lastApiError ? `\n\n${lastApiError}` : " Check your connection and try again."}`);
     return;
   }
   if (isNewLoc) { db.locations.push(editing); isNewLoc = false; }
@@ -542,7 +533,7 @@ async function saveDetail() {
 async function removeLoc(id) {
   const loc = db.locations.find((l) => l.id === id);
   if (!confirm(`Delete ${loc && loc.title ? `“${loc.title}”` : "this location"}? This can't be undone.`)) return;
-  if (!(await deleteLocation(id))) { alert("Couldn't delete — check your connection and try again."); return; }
+  if (!(await deleteLocation(id))) { alert(`Couldn't delete.${lastApiError ? `\n\n${lastApiError}` : " Check your connection and try again."}`); return; }
   db.locations = db.locations.filter((l) => l.id !== id); closeDetail(true); render();
 }
 function closeDetail(force) {
