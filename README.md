@@ -169,6 +169,6 @@ order by metres;
 - [x] Projects, rich location records, shoot-day planner, responsive layout
 - [x] Postgres + PostGIS backend (replaced localStorage)
 - [x] Offline PWA (installable, works without signal in the field)
-- [x] Photo upload to object storage (vs. pasted URLs)
+- [x] Photo upload to object storage (vs. pasted URLs) — code ready; needs R2 enabled on the account
 - [x] Script-writing export (locations → Markdown scene list)
 - [ ] Public website export from the same data

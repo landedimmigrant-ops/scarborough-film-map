@@ -15,8 +15,9 @@ Owner: Prem (documentary filmmaker). Single-user for now.
 
 **Working app on a Neon (Postgres 18 + PostGIS) backend.** All major features are done and syncing
 to the cloud. Migrated off Supabase 2026-08-11 — its free tier idled the project into a
-Cloudflare 521 and took the data offline with it; Neon does not idle-delete. The 5 seeded
-locations were unrecoverable at migration time (see **Data recovery** below).
+Cloudflare 521 and took the data offline with it; Neon does not idle-delete. **All 38 locations
+were recovered**: Supabase came back mid-migration and everything was pulled across with
+`tools/import-json.mjs`, verified field-by-field (see **Data recovery** below).
 
 ### What works end-to-end
 - Interactive map of Scarborough (OpenStreetMap **or Esri satellite** tiles + City of Toronto neighbourhood boundaries)
@@ -35,7 +36,8 @@ locations were unrecoverable at migration time (see **Data recovery** below).
 - JSON export
 - **Neon Postgres + PostGIS backend** behind a same-origin Cloudflare Pages Function
   (`functions/api/[[route]].js`) — the browser holds no credential at all
-- **Reference photos in Cloudflare R2**, served through `/api/photo/<key>`
+- Reference photos: code path moved to **Cloudflare R2** via `/api/photo/<key>` — *pending R2 being
+  enabled on the account* (see Storage below); the route returns a clear 503 until then
 
 ### Two map modes (interaction model)
 - **Mark mode (default):** click anywhere → drop + auto-name a pin. Drag the pin to fine-tune (re-identifies on drop).
@@ -77,13 +79,16 @@ contacts, footage, notes), which is the "script-writing export" roadmap item.
       cached fallback = last-known locations offline; `/api/photo/*` cache-first; writes never
       intercepted). **Hosted on
       Cloudflare Pages 2026-07-02** → https://scarborough-film-map.pages.dev (see Deploy section).
-      **Remaining:** install on the phone (Add to Home Screen) + airplane-mode field test.
+      **Remaining:** install on the phone (Add to Home Screen) + airplane-mode field test. The
+      cache version is now `sfm-v2`; the v1 caches held dead supabase.co URLs and are purged on
+      activate, so the phone needs one online load to pick up the new worker.
 - [x] Photo/file upload — shipped 2026-07-02 (Supabase Storage), moved to **Cloudflare R2**
       2026-08-11: 📤 Upload in the editor (multi-select, client-side 1600px JPEG compression;
       URL flows into the existing media-row persistence). Follow-up idea: GC storage objects on
-      photo removal. **Blocked on Prem:** R2 must be enabled once in the Cloudflare dashboard.
-- [x] Off Supabase onto Neon — shipped 2026-08-11 (see the Neon section). **Remaining:** enable R2,
-      set the production `NEON_DATABASE_URL` secret, redeploy, re-test the installed PWA.
+      photo removal. **Blocked on Prem:** R2 must be enabled once in the Cloudflare dashboard —
+      that's the only outstanding item in the whole migration.
+- [x] Off Supabase onto Neon — shipped, deployed and verified 2026-08-11 (see the Neon section):
+      production secret set, all 38 locations imported and diffed, live site serving them.
 - [ ] Public website export / embed from the same data
 - [x] Script-writing export (locations → scene list) — shipped 2026-07-01 as the 📝 Scenes Markdown export
 
@@ -246,24 +251,31 @@ affected. Steps are in the README's Deploy section.
 Follow-up idea (unchanged from the Supabase era): garbage-collect the R2 object when a photo row
 is removed. Nothing deletes objects today.
 
-### Data recovery
+### Data recovery — done, 38/38
 
-The 5 seeded locations (Guild Park, UTSC quad, Rouge Beach, Cathedral Bluffs, STC atrium) lived
-only in the paused Supabase project and were **not recoverable at migration time** — the REST host
-returned Cloudflare 521 and the pooler timed out. Their titles/neighbourhoods/statuses are recorded
-below; their coordinates are not, and were deliberately not invented.
-
-If a copy ever surfaces (a restored Supabase project, a phone still holding a JSON export, an old
-`⭳ JSON` download), load it with:
+The migration started with Supabase unreachable (REST host on Cloudflare 521, pooler timing out),
+so schema and code moved first and the database went live empty. Supabase then came back, and the
+whole dataset was pulled through `tools/import-json.mjs`:
 
 ```bash
-node tools/import-json.mjs <file>.json --dry     # preview first
-node tools/import-json.mjs <file>.json
+# dump each table from the Supabase REST API into one file, then:
+node tools/import-json.mjs supabase-dump.json --project "Untitled film"
 ```
 
-It reads the app's own export shape, a raw row dump, or a bare array, in camelCase or snake_case,
-and re-running is safe (same title + within 1 m ⇒ skipped, via `ST_DWithin`). Photo URLs pointing
-at the retired Supabase bucket are imported but flagged — they won't load, so re-upload those.
+**Verified, not assumed** — a field-by-field diff of all 38 locations (neighbourhood, status,
+category, shoot_date, best_time, parking, permit, notes, address, plus lat/lng to 7 decimal places
+through the PostGIS geography round-trip) reported **0 mismatches**, and contacts (3), interviews
+(1) and footage rows (7) are byte-identical to the source. The docs previously said only 5 seeded
+locations existed; the real count was 38 — Prem had been adding pins in the field.
+
+`supabase-dump.json` sits at the repo root as the migration's raw source of truth. It is **not
+committed** — it's uncommitted working data, and whether a 38-location dump belongs in git is
+Prem's call (the app's own ⭳ JSON export covers the same ground on demand). There were **no
+photos** in Supabase Storage, so nothing was lost to the storage change.
+
+The importer stays useful for any future JSON: it reads the app's own ⭳ JSON export, a raw row
+dump, or a bare array, in camelCase or snake_case, and re-running is safe (same title + within 1 m
+⇒ skipped, via `ST_DWithin`). Always `--dry` first.
 
 ### What was lost / kept in the migration
 
@@ -275,17 +287,19 @@ at the retired Supabase bucket are imported but flagged — they won't load, so 
 - **Dropped:** the RLS policies (see above), Supabase Storage, the `supabase-js` CDN script,
   `.mcp.json` (the Supabase MCP server), and the anon key that used to sit in `app.js`.
 
-### Seeded data (titles only — coordinates were lost with the Supabase project)
+### Live data (38 locations, migrated intact)
 
-| Location | Neighbourhood | Status |
-|---|---|---|
-| Guild Park sculpture lawn | Guildwood | Scouting |
-| UTSC brutalist quad | Highland Creek | Confirmed |
-| Rouge Beach mouth | West Rouge | Shot |
-| Cathedral Bluffs lookout | Cliffcrest | Idea |
-| STC interior atrium | Bendale-Glen Andrew | Scouting |
+Project **"Untitled film"** — 28 idea · 2 scouting · 1 confirmed · 7 shot. Seven have shoot dates,
+seven carry drone footage notes, three have contacts, one has an interview.
 
-Guild Park also had a contact (Toronto Film Office) and an interview (Mr. Spencer, park historian).
+Beyond the five originally-documented pins (Guild Park, UTSC quad, Cathedral Bluffs, STC atrium,
+plus West Rouge Beach) the set now spans the Bluffs waterfront, drone plates across mid-Scarborough,
+food/retail spots (Dragon Centre, Perfect Chinese, Ital Vital, Bodega by City Cottage, Fresh Roti),
+institutions (Scarborough Museum, Civic Centre, Cedarbrae CI, Momiji, Church of Holy Wisdom) and
+parks (Morningside, Thompson, Rosetta McClain, Glen Rouge, Kidstown).
+
+Don't re-seed or "restore" anything — this is Prem's real working set. `⭳ JSON` in the app footer
+is the backup button.
 
 ## Open data licences (keep attributions)
 
