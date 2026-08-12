@@ -1,10 +1,11 @@
 # Locking the private side — Cloudflare Access
 
-**Do this before you share the `/suggest` link with anyone.**
+**Do this before you share any link — `/suggest` or the landing page.**
 
-Until it's done, `https://scarborough-film-map.pages.dev` is fully open: anyone who has the URL can
-read, edit and delete all 38 locations. That was tolerable while the URL was effectively private.
-The moment you send a contributor a link to the same host, it isn't.
+Until it's done, the console at `https://scarborough-film-map.pages.dev/app/` is fully open: anyone
+who has the URL can read, edit and delete all your locations, ideas and shoot days. That was
+tolerable while the URL was effectively private. The moment you hand out links to the same host, it
+isn't — and the landing page now links to the console in its footer.
 
 Everything here is dashboard work — it needs your login and accepts terms on your behalf, so it
 can't be scripted for you.
@@ -13,15 +14,22 @@ can't be scripted for you.
 
 ## What you're building
 
+Since the 2026-08-12 restructure the private surface lives under two clean prefixes, so the rules
+are simpler than they used to be:
+
 | Path | Who can reach it | Why |
 |---|---|---|
-| `/` and everything else | **you only** | the app: your locations, contacts, shoot dates, review queue |
-| `/suggest`, `/suggest.js`, `/suggest.css` | **anyone** | the public form you share |
-| `/api/public/*` | **anyone** | the single endpoint that submits a suggestion |
-| `/api/*` (everything else) | **you only** | reads and writes over your data |
-| `/data/*`, `/styles.css`, `/icons/*` | **anyone** | the guest page needs them; they're open data and CSS, no secrets |
+| `/` (landing), `/landing.css` | anyone | the film's public face |
+| `/suggest`, `/suggest.js`, `/suggest.css` | anyone | the public form you share |
+| `/data/*`, `/icons/*`, `/manifest.webmanifest`, `/sw.js` | anyone | open data, icons, PWA plumbing — no secrets |
+| `/api/public/*` | anyone | the single endpoint that submits a suggestion |
+| **`/app*`** | **you only** | the console: locations, ideas, shoot days, review queue |
+| **`/api/*` (everything else)** | **you only** | reads and writes over your data |
 
-The path split is deliberate: `/api/public/…` versus `/api/suggestions`. A bypass rule written as
+Everything in the "anyone" rows needs **no Access rule at all** — you only protect `/app*` and
+`/api/*`, then punch one bypass hole for `/api/public/*`.
+
+The naming split is deliberate: `/api/public/…` versus `/api/suggestions`. A bypass rule written as
 `/api/suggest*` would also match `/api/suggestions` and quietly expose your review queue — including
 every contributor's email. Don't rename these to share a prefix.
 
@@ -39,13 +47,15 @@ Zero Trust → **Settings → Authentication → Login methods**. **One-time PIN
 all you need: you enter your email, Cloudflare emails you a 6-digit code. No password, nothing to
 leak. (Google is also an option if you'd rather click through.)
 
-## 3. Protect the app
+## 3. Protect the console and the API
 
 Zero Trust → **Access → Applications → Add an application → Self-hosted**.
 
 - **Application name:** `Scarborough Film Map — private`
 - **Session duration:** 1 month (so your phone doesn't ask constantly)
-- **Public hostname:** `scarborough-film-map.pages.dev`, path left **empty** (covers everything)
+- **Public hostnames:** add **two** entries:
+  - `scarborough-film-map.pages.dev` path `app*`
+  - `scarborough-film-map.pages.dev` path `api/*`
 
 Then **Add policy**:
 - **Policy name:** `Only Prem`
@@ -54,31 +64,17 @@ Then **Add policy**:
 
 Save.
 
-## 4. Let the public in — the bypass rules
+## 4. Let the public suggestion endpoint through
 
-Still in the same application, add a **second policy**:
+Add a **second self-hosted application**:
 
-- **Policy name:** `Public suggestion page`
-- **Action:** **Bypass**
-- **Include:** *Everyone*
+- **Application name:** `Scarborough Film Map — public suggest API`
+- **Public hostname:** `scarborough-film-map.pages.dev` path `api/public/*`
+- **Policy:** name `Everyone`, action **Bypass**, include *Everyone*
 
-Then set its paths. In the application's **Public hostname** section add these as separate
-hostname+path entries with the Bypass policy applied:
-
-```
-scarborough-film-map.pages.dev/suggest
-scarborough-film-map.pages.dev/suggest.js
-scarborough-film-map.pages.dev/suggest.css
-scarborough-film-map.pages.dev/api/public/*
-scarborough-film-map.pages.dev/data/*
-scarborough-film-map.pages.dev/styles.css
-scarborough-film-map.pages.dev/icons/*
-```
-
-> If the UI only lets one application own a hostname, create a **second self-hosted application**
-> instead, name it `Scarborough Film Map — public form`, give it the paths above and a single
-> Bypass/Everyone policy. More specific paths win over the catch-all, so the private app keeps
-> covering everything else.
+More specific paths win, so this hole in `/api/*` is exactly `/api/public/*` and nothing else.
+The landing page, `/suggest` and the static assets aren't covered by either application, so they
+stay public with no rule needed.
 
 ## 5. Set the tripwire
 
@@ -104,22 +100,31 @@ wrong order can't lock you out of your own app.
 ## 6. Check it actually works
 
 ```bash
-# signed out — should redirect to a Cloudflare login page, NOT return your data
+# signed out — both should redirect to a Cloudflare login page, NOT return data
+curl -sI https://scarborough-film-map.pages.dev/app/ | head -1
 curl -sI https://scarborough-film-map.pages.dev/api/db | head -1
 
-# the public form and its endpoint must still be reachable
+# the public pages and endpoint must still be reachable with no login
+curl -sI https://scarborough-film-map.pages.dev/ | head -1
 curl -sI https://scarborough-film-map.pages.dev/suggest | head -1
 curl -s -X POST https://scarborough-film-map.pages.dev/api/public/suggest \
   -H 'Content-Type: application/json' -d '{"lat":43.77,"lng":-79.25,"title":"Access test","name":"Test"}'
 ```
 
-Expected: the first is a `302` to `*.cloudflareaccess.com` (or a `401`/`403` from the tripwire), the
-second is `200`, the third returns `{"ok":true,...}`.
+Expected: the first two are `302` to `*.cloudflareaccess.com` (or `401`/`403` from the tripwire),
+the next two are `200`, the last returns `{"ok":true,...}`.
 
-Then, in a browser: open `/` and confirm you get the email-code login; open `/suggest` in a private
-window and confirm it loads with no login at all.
+Then, in a browser: open `/app/` and confirm you get the email-code login; open `/` and `/suggest`
+in a private window and confirm they load with no login at all.
 
-Finally — **delete the "Access test" suggestion** from your review queue.
+Finally — **decline the "Access test" suggestion** from your review queue.
+
+### The phone after Access
+
+The installed PWA will hit the Access login once per session duration (1 month). Do one online
+open after setting this up so the service worker and the Access cookie are both fresh. Offline
+field use keeps working — cached data is served without a round-trip to Access, and writes go
+through the network, which by then carries your Access cookie.
 
 ---
 

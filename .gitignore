@@ -22,3 +22,4 @@ dist/
 # In production the string lives only in a Pages secret (see README).
 .neon
 .dev.vars
+.dev.vars.*

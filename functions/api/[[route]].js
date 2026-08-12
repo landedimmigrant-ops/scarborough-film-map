@@ -188,6 +188,12 @@ async function saveIdea(cs, idea) {
   const body = typeof idea.body === 'string' ? idea.body.trim().slice(0, 4000) || null : null;
   const url = clean(idea.url, 2000);
   if (kind !== 'note' && !url) return fail(`a ${kind} idea needs a url`, 400);
+  // Only http(s) URLs — or our own R2 photo paths — may be stored on a link or
+  // image idea. The client renders url into href/src; a stored javascript: URL
+  // must be impossible, not merely unrendered.
+  if (url && !/^https?:\/\//i.test(url) && !url.startsWith('/api/photo/')) {
+    return fail('that url has to start with http:// or https://', 400);
+  }
   if (kind === 'note' && !body && !title) return fail('a note needs some text', 400);
 
   // A pasted link with no title yet: go get one. Only on create-shaped saves

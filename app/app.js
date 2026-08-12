@@ -599,7 +599,7 @@ function linkedIdeasBlock(loc) {
   const row = (i) => {
     const icon = i.kind === "link" ? "🔗" : i.kind === "image" ? "🖼" : "📝";
     const label = i.title || i.body.slice(0, 60) || i.url;
-    const inner = i.url
+    const inner = safeHttpUrl(i.url)
       ? `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(label)}</a>`
       : esc(label);
     return `<div class="linked-idea">${icon} ${inner}${i.body && i.title ? `<span class="li-body">${esc(i.body.slice(0, 90))}</span>` : ""}</div>`;
@@ -1834,6 +1834,9 @@ function ideaKindMeta(i) {
   return { icon: "📝", label: "Note" };
 }
 function urlHost(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } }
+// Only http(s) may become a live link — anything else (javascript:, data:)
+// renders as inert text. The server enforces the same rule on save.
+function safeHttpUrl(u) { return /^https?:\/\//i.test(u || "") ? u : ""; }
 
 /* ---------- console: lane model ---------- */
 function consoleLanes(list) {
@@ -1980,11 +1983,11 @@ function ideaCardHtml(idea) {
     <article class="ccard ccard--idea ${idea.status === "archived" ? "ccard--archived" : ""}" data-id="${esc(idea.id)}" data-kind="idea" tabindex="0">
       <div class="ccard-t">
         <span class="ie-icon" title="${meta.label}">${meta.icon}</span>
-        ${idea.kind === "link" && idea.url
+        ${idea.kind === "link" && safeHttpUrl(idea.url)
           ? `<a href="${esc(idea.url)}" target="_blank" rel="noopener" class="ie-link">${esc(title)}</a>`
           : esc(title)}
       </div>
-      ${idea.kind === "image" && idea.url ? `<img class="ie-img" src="${esc(idea.url)}" alt="" loading="lazy" onerror="this.style.display='none'">` : ""}
+      ${idea.kind === "image" && (safeHttpUrl(idea.url) || idea.url.startsWith("/api/photo/")) ? `<img class="ie-img" src="${esc(idea.url)}" alt="" loading="lazy" onerror="this.style.display='none'">` : ""}
       ${bodyPreview ? `<div class="ccard-m ie-body-preview">${esc(bodyPreview)}</div>` : ""}
       <div class="ccard-m">
         ${idea.kind === "link" && idea.url ? `<span class="chip">${esc(urlHost(idea.url))}</span>` : ""}

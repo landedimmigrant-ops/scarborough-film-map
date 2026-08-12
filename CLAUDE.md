@@ -11,7 +11,35 @@ The data feeds script-writing now and a public website later.
 
 Owner: Prem (documentary filmmaker). Single-user for now.
 
-## Current status (as of 2026-08-11)
+## Current status (as of 2026-08-12)
+
+**2026-08-12 — the "proper website" build.** Three big changes in one day:
+
+1. **Site restructure:** the public landing page now lives at `/` (film blurb + CTA to `/suggest`);
+   the private console app moved to **`/app/`**. `sw.js` stays at root scope (cache `sfm-v3`) so
+   existing PWA installs upgrade in place; `manifest.webmanifest` start_url is `/app/` and the
+   landing redirects standalone-display opens to `/app/` (safety net for pre-move installs — an
+   iPhone A2HS re-add picks up the new start_url). Access rules got SIMPLER: protect `/app*` +
+   `/api/*`, bypass `/api/public/*`, everything else public by default — `docs/access-setup.md`
+   was rewritten for this model.
+2. **Filmmaker console** (🎬 toggle in the sidebar): a board view over the same records. Lanes
+   group by status / type / neighbourhood / shoot day; sidebar search + filters apply to it; cards
+   drag between lanes with a pointer-events ghost (status + type lanes re-file the location; day
+   lanes add/move/reorder that day's stops; hood lanes are read-only since the hood derives from
+   coordinates). UX patterns lifted from the Tripdeck project (`~/Documents/Dev/travel_planner`).
+3. **Ideas + shoot days**, both in Postgres:
+   - `ideas` — capture-first inbox (note / link / image). Paste a bare link and the Function
+     fetches its `<title>` server-side. An idea can be **placed** on the map (seeds a new pin,
+     archives itself, stays linked via `location_id`) or **attached** to an existing location;
+     linked ideas resurface read-only in the location editor.
+   - `shoot_days` + `shoot_day_stops` — named, dated days with an ordered stop list (per-stop
+     planned time + note), edited in the planner panel (list → editor, proximity-sorted add-stop
+     picker, leg distances, debounced autosave with honest state text) or by dragging in the
+     console's day lanes. Output: a **print-first day sheet** (`@media print` strips everything
+     else; readable on the iPad as-is) and a text export. The old radius planner remains as
+     ⚡ Radius plan with **💾 Save as shoot day**.
+
+## Previous status (2026-08-11)
 
 **Working app on a Neon (Postgres 18 + PostGIS) backend.** All major features are done and syncing
 to the cloud. Migrated off Supabase 2026-08-11 — its free tier idled the project into a
@@ -96,7 +124,11 @@ contacts, footage, notes), which is the "script-writing export" roadmap item.
       **Blocked on Prem:** Cloudflare Access must be configured before the /suggest link is shared,
       or the private side of the app stays open to anyone with the URL. Step-by-step:
       [`docs/access-setup.md`](docs/access-setup.md).
-- [ ] Public website export / embed from the same data
+- [x] Public website — shipped 2026-08-12: landing page at `/` (film blurb + suggest CTA); the
+      console moved to `/app/`. Embedding a public map view of selected locations is still open.
+- [x] Filmmaker console (board over statuses/types/hoods/days) — shipped 2026-08-12
+- [x] Idea capture (links / notes / images → place or attach) — shipped 2026-08-12
+- [x] Saved shoot days + printable day sheet — shipped 2026-08-12
 - [x] Script-writing export (locations → scene list) — shipped 2026-07-01 as the 📝 Scenes Markdown export
 
 ## Run / verify
@@ -148,8 +180,10 @@ Vanilla JS + Leaflet. No framework, no bundler. Files:
 
 | File | Purpose |
 |---|---|
-| `index.html` | Shell: sidebar + map pane + two slide-over panels (editor, planner) |
-| `app.js` | All client logic (sectioned with comments); the `/api/*` client is at the top |
+| `index.html` + `landing.css` | The **public landing page** at `/` — film blurb, CTA to `/suggest`, standalone-PWA redirect to `/app/` |
+| `app/index.html` | Console shell: sidebar (with 🗺/🎬 view toggle) + map pane + `#console` board + slide-over panels + `#daysheet` print overlay |
+| `app/app.js` | All client logic (sectioned with comments); the `/api/*` client is at the top; console/drag/days modules at the bottom |
+| `app/styles.css` | Dark theme, responsive (mobile breakpoint 720px), console + day-sheet + `@media print` rules |
 | `functions/api/[[route]].js` | The entire backend: routes, SQL over HTTP, R2 photo put/get, the owner gate |
 | `suggest.html` / `suggest.js` / `suggest.css` | The **public** guest suggestion page at `/suggest` — standalone, no service worker, shows none of Prem's locations |
 | `schema.sql` | The database, re-appliable: `node tools/db-exec.mjs --file schema.sql` |
@@ -157,8 +191,7 @@ Vanilla JS + Leaflet. No framework, no bundler. Files:
 | `tools/db-exec.mjs` | Run SQL / apply schema.sql |
 | `tools/import-json.mjs` | Load locations from a JSON export — the data-recovery path |
 | `dev.sh` / `deploy.sh` | Local Wrangler dev server / Pages deploy |
-| `styles.css` | Dark theme, responsive (mobile breakpoint 720px) |
-| `sw.js` | Service worker — offline strategies per resource type (see file header comment) |
+| `sw.js` | Service worker at ROOT scope (upgrades v2 installs in place) — offline strategies per resource type (see file header comment) |
 | `manifest.webmanifest` + `icons/` | PWA install metadata + app icons (regenerable with PIL — pin motif, app palette) |
 | `data/scarborough.geojson` | 30 Scarborough neighbourhood polygons (WGS84) + centroids |
 | `data/scarborough-boundary.geojson` | Outer Scarborough perimeter (5121 pts, computed from shared-edge cancellation) |
@@ -186,6 +219,13 @@ Vanilla JS + Leaflet. No framework, no bundler. Files:
 | `nearbyFeatures(lat, lng)` | Overpass — named buildings/parks within ~60 m, sorted by distance → quick-pick chips |
 | `exploreAt(latlng)` | Explore mode — combined neighbourhood blurb + nearest Wikipedia landmark popup |
 | `fetchNearestWiki(lat, lng)` | Wikipedia geosearch + summary → `{ title, short, url, others }` |
+| `setView(v)` / `renderConsole(list)` | 🗺/🎬 view switch; the console board (lanes from `consoleLanes`, delegated `data-act` events) |
+| `saveIdeaApi` / `deleteIdeaApi` / `saveDayApi` / `deleteDayApi` | Async writers, same null-on-failure contract as `saveLocation` |
+| `captureIdea()` / `parseCapture(text)` | The capture box: bare URL → link (server fetches title), image extension → image, else note |
+| `cdrag*` functions | Console drag: pointer events, 8px/250ms thresholds, ghost clone, `elementsFromPoint` targeting |
+| `openDays(dayId?)` / `renderDayEditor` | Shoot-days panel (list ⇄ editor), debounced autosave via `scheduleDaySave`/`flushDaySaveNow` |
+| `openDaySheet(day)` | Print-first day sheet overlay; `@media print` shows only it |
+| `saveRadiusPlanAsDay(anchor, near)` | ⚡ radius plan → persisted shoot day |
 
 ### Data model (in-memory shape, maps 1:1 to the Postgres tables)
 
@@ -193,6 +233,18 @@ Vanilla JS + Leaflet. No framework, no bundler. Files:
 db = {
   projects: [ { id, name, createdAt } ],
   activeProjectId,
+  ideas: [ {                    // capture-first inbox (console's 💡 lane)
+    id, projectId, kind,        // kind: 'note' | 'link' | 'image'
+    title, body, url,           // url only http(s) or /api/photo/<key> — enforced server-side
+    locationId,                 // set when placed on the map / attached to a pin
+    status, createdAt,          // status: 'inbox' | 'archived'
+  } ],
+  shootDays: [ {                // the manual planner (also the console's day lanes)
+    id, projectId, title,
+    date,                       // 'YYYY-MM-DD' string, never Date-parsed (Safari)
+    notes, createdAt,
+    stops: [ { id, locationId, plannedTime, note } ],   // ordered; position = array index
+  } ],
   locations: [ {
     id,           // uuid (server-generated)
     projectId,    // → projects.id

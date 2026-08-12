@@ -60,8 +60,8 @@ Get the string from `.neon`, or `npx neonctl connection-string --project-id live
 ## Architecture
 
 ```
-browser (index.html + app.js + sw.js)        no credential, no SDK
-   │  fetch api/db, api/locations, api/photo …  (same-origin)
+browser (/ landing · /app/ console · /suggest)   no credential, no SDK
+   │  fetch /api/db, /api/locations, /api/ideas, /api/days, /api/photo …
    ▼
 functions/api/[[route]].js                   Cloudflare Pages Function
    │  SQL over HTTP  ·  holds NEON_DATABASE_URL + the R2 binding
@@ -76,7 +76,9 @@ allow-all policy to be usable at all.
 
 | File | Purpose |
 |---|---|
-| `index.html` / `app.js` / `styles.css` | the whole client (vanilla JS + Leaflet, no framework) |
+| `index.html` + `landing.css` | the public landing page at `/` |
+| `app/index.html` / `app/app.js` / `app/styles.css` | the private console at `/app/` — map, board, ideas, shoot days (vanilla JS + Leaflet, no framework) |
+| `suggest.html` / `suggest.js` / `suggest.css` | the public suggestion form at `/suggest` |
 | `functions/api/[[route]].js` | the entire backend — routes, SQL, R2 |
 | `sw.js` | offline strategies per resource type |
 | `schema.sql` | the database, re-appliable (`node tools/db-exec.mjs --file schema.sql`) |
