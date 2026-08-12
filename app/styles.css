@@ -353,8 +353,19 @@ body.view-console #explore-toggle, body.view-console #mode-pill { display: none;
   border-radius: 8px; padding: 9px 11px; cursor: pointer;
   transition: border-color .15s, box-shadow .15s;
 }
-.ccard[data-drag] { touch-action: none; cursor: grab; }
+/* touch-action:none lives ONLY on the grip — on the whole card it would make
+   a phone console unscrollable, since gestures starting on a card could never
+   native-pan (touch-action is decided at gesture start, before our hold timer
+   gets a say). Mouse drags grab anywhere; touch drags start on the grip. */
+.ccard[data-drag] { cursor: grab; padding-left: 24px; }
 .ccard[data-drag]:active { cursor: grabbing; }
+.ccard-grip {
+  position: absolute; left: 1px; top: 0; bottom: 0; width: 21px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted); opacity: .55; font-size: 12px; letter-spacing: -1px;
+  touch-action: none; cursor: grab;
+}
+.ccard:hover .ccard-grip { opacity: 1; }
 .ccard:hover { border-color: var(--accent); }
 .ccard.s-scouting { border-left-color: var(--scouting); }
 .ccard.s-confirmed { border-left-color: var(--confirmed); }
@@ -517,8 +528,9 @@ body.cdragging { cursor: grabbing; user-select: none; -webkit-user-select: none;
     flex: none; width: auto; }
 
   /* #9 — touch targets ≥44px on mobile (Apple HIG) */
-  .btn, .icon-btn, select, input, .nearby-chip,
+  .btn, .icon-btn, select, input, .nearby-chip, .lane-open, .cg-tab, .vt-btn,
   #sat-toggle, #explore-toggle, #sidebar-toggle { min-height: 44px; }
+  .lane-open { min-width: 44px; }
   .icon-btn { width: 44px; flex-basis: 44px; }
   .repeat-row .rm { min-height: 44px; min-width: 40px; }
   .card .del { min-width: 44px; min-height: 44px; padding: 0; margin: -8px -6px -8px auto;

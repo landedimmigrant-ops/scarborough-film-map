@@ -27,7 +27,7 @@ const PHOTO_CAP = 300;
    installs made before start_url moved to /app/, and it redirects those to the
    app, so it has to work offline as well. */
 const PRECACHE = [
-  "/", "/index.html", "/app/", "/app/index.html", "/app/styles.css", "/app/app.js",
+  "/", "/index.html", "/landing.css", "/app/", "/app/index.html", "/app/styles.css", "/app/app.js",
   "/manifest.webmanifest",
   "/data/scarborough.geojson", "/data/scarborough-boundary.geojson", "/data/neighbourhood-blurbs.json",
   "/icons/icon-192.png", "/icons/icon-512.png", "/icons/apple-touch-icon.png",

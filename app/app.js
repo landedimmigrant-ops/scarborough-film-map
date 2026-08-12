@@ -176,6 +176,11 @@ async function loadDB() {
   const projects = (snap.projects || []).map((p) => ({ id: p.id, name: p.name, createdAt: new Date(p.created_at).getTime() }));
   if (!projects.length) { apiFailed("loadDB", new Error("no projects returned")); return null; }
 
+  // A mid-session re-sync must not silently switch the active project back to
+  // the first one — keep the current selection when it still exists.
+  const keepActive = db && db.activeProjectId && projects.some((p) => p.id === db.activeProjectId)
+    ? db.activeProjectId : projects[0].id;
+
   // id → contributor, so a location can name the person who suggested it without
   // a second request.
   contributorsById = {};
@@ -186,7 +191,7 @@ async function loadDB() {
     };
   });
 
-  return { projects, activeProjectId: projects[0].id, locations, ideas, shootDays };
+  return { projects, activeProjectId: keepActive, locations, ideas, shootDays };
 }
 
 async function saveLocation(loc) {
@@ -695,7 +700,14 @@ async function removeLoc(id) {
   const loc = db.locations.find((l) => l.id === id);
   if (!confirm(`Delete ${loc && loc.title ? `“${loc.title}”` : "this location"}? This can't be undone.`)) return;
   if (!(await deleteLocation(id))) { alert(`Couldn't delete.${lastApiError ? `\n\n${lastApiError}` : " Check your connection and try again."}`); return; }
-  db.locations = db.locations.filter((l) => l.id !== id); closeDetail(true); render();
+  db.locations = db.locations.filter((l) => l.id !== id);
+  // Mirror the server-side cascade in memory: shoot-day stops referencing the
+  // dead location must go too, or the day editor's next wholesale re-save
+  // reinserts a row that violates the FK and every autosave fails until reload.
+  (db.shootDays || []).forEach((d) => { d.stops = d.stops.filter((s) => s.locationId !== id); });
+  (db.ideas || []).forEach((i) => { if (i.locationId === id) i.locationId = null; });
+  if (!document.getElementById("planner").hidden) renderDaysPanel();
+  closeDetail(true); render();
 }
 function closeDetail(force) {
   const panel = document.getElementById("detail");
@@ -786,7 +798,8 @@ function dayTotalKm(day) {
 }
 
 function openDays(dayId) {
-  if (!closeDetail()) return;
+  if (!closeDetail()) return false;   // unsaved edits kept — caller must not act as if the panel opened
+  flushDaySaveNow();                  // a pending edit from a previously open day
   captureFocus();
   closeSuggestions();
   if (planCircle) { map.removeLayer(planCircle); planCircle = null; }
@@ -797,9 +810,13 @@ function openDays(dayId) {
   panel.hidden = false;
   renderDaysPanel();
   panel.focus();
+  return true;
 }
 
 async function startNewDay() {
+  if (startNewDay._busy) return;      // double-click must not mint two days
+  startNewDay._busy = true;
+  setTimeout(() => { startNewDay._busy = false; }, 1500);
   const day = { id: null, projectId: db.activeProjectId, title: "", date: "", notes: "", createdAt: Date.now(), stops: [] };
   if (!(await saveDayApi(day))) {
     alert(`Couldn't create a shoot day.${lastApiError ? `\n\n${lastApiError}` : ""}`);
@@ -815,6 +832,9 @@ async function startNewDay() {
 }
 
 function scheduleDaySave(day) {
+  // One pending-save slot; switching days flushes the old one first, so day A's
+  // edits can never be dropped — or worse, saved into day B's pending flush.
+  if (daySaveDay && daySaveDay !== day) flushDaySaveNow();
   daySaveDay = day;
   daySaveState = "Saving…";
   paintDaySaveState();
@@ -830,7 +850,9 @@ async function flushDaySaveNow() {
   const ok = await saveDayApi(day);
   daySaveState = ok ? "Saved ✓" : `Couldn't save${lastApiError ? ` — ${lastApiError}` : ""} (edits kept; change anything to retry)`;
   paintDaySaveState();
-  if (!ok && day) daySaveDay = day;   // the next mutation retries
+  // Re-park for retry only if nothing newer claimed the slot while we awaited —
+  // a failed save of day A must never clobber day B's queued save.
+  if (!ok && !daySaveDay) daySaveDay = day;
 }
 function paintDaySaveState() {
   const el = document.getElementById("day-save-state");
@@ -958,13 +980,15 @@ function renderDayEditor(body, day) {
     let cands = locsAll.filter((l) => !inDay.has(l.id));
     if (q) cands = cands.filter((l) => haystack(l).includes(q));
     // With stops already planned, the useful order is "closest to the last stop";
-    // starting fresh, alphabetical is the honest default.
-    if (lastStopLoc) cands = cands.map((l) => ({ l, d: distKm(lastStopLoc, l) })).sort((a, b) => a.d - b.d).map((x) => Object.assign(x.l, { _d: x.d }));
-    else cands = cands.slice().sort((a, b) => (a.title || "").localeCompare(b.title || ""));
-    candEl.innerHTML = cands.slice(0, 8).map((l) => `
+    // starting fresh, alphabetical is the honest default. Wrapper objects, not
+    // properties written onto the real records — those leak into the JSON export.
+    const wrapped = lastStopLoc
+      ? cands.map((l) => ({ l, d: distKm(lastStopLoc, l) })).sort((a, b) => a.d - b.d)
+      : cands.slice().sort((a, b) => (a.title || "").localeCompare(b.title || "")).map((l) => ({ l, d: null }));
+    candEl.innerHTML = wrapped.slice(0, 8).map(({ l, d }) => `
       <button class="stop-cand" data-id="${esc(l.id)}">
         <span class="stop-cand-t">${esc(l.title || "Untitled")}</span>
-        <span class="stop-cand-m">${esc(l.neighbourhood)}${lastStopLoc && l._d != null ? ` · ${l._d.toFixed(1)} km` : ""}</span>
+        <span class="stop-cand-m">${esc(l.neighbourhood)}${d != null ? ` · ${d.toFixed(1)} km` : ""}</span>
       </button>`).join("") || (q ? `<div class="empty-mini">No match.</div>` : "");
     candEl.querySelectorAll(".stop-cand").forEach((btn) => {
       btn.onclick = () => {
@@ -1196,8 +1220,10 @@ function renderSuggestions() {
       // Temporary marker so Prem can eyeball the spot before committing to it.
       map.setView([s.lat, s.lng], 16);
       if (window._suggMarker) map.removeLayer(window._suggMarker);
+      // esc() matters: Leaflet renders tooltip content as HTML, and s.title is
+      // public input from the /suggest form — a hostile title must stay text.
       window._suggMarker = L.circleMarker([s.lat, s.lng], { radius: 9, weight: 3, color: "#f0a93b", fillColor: "#f0a93b", fillOpacity: .5 })
-        .addTo(map).bindTooltip(`💡 ${s.title}`).openTooltip();
+        .addTo(map).bindTooltip(`💡 ${esc(s.title)}`).openTooltip();
     };
     const acc = el.querySelector(".sugg-accept");
     if (acc) acc.onclick = () => reviewSuggestion(id, "accept", acc);
@@ -1328,11 +1354,13 @@ function drawMarkers(list) {
     if (existing) {
       existing.setLatLng([loc.lat, loc.lng]);
       existing.setStyle({ fillColor: STATUS[loc.status].color });
-      existing.setTooltipContent(loc.title || "Untitled");
+      existing.setTooltipContent(esc(loc.title || "Untitled"));
       return;
     }
+    // esc(): Leaflet tooltips are HTML sinks, and titles can originate from the
+    // public /suggest form once accepted.
     const m = L.circleMarker([loc.lat, loc.lng], { radius: 7, weight: 2, color: "#0c1117", fillColor: STATUS[loc.status].color, fillOpacity: 1 }).addTo(map);
-    m.bindTooltip(loc.title || "Untitled");
+    m.bindTooltip(esc(loc.title || "Untitled"));
     // look the record up at click time — the in-memory object is replaced on save
     m.on("click", () => { const cur = db.locations.find((x) => x.id === loc.id); if (cur) openDetail(cur, false); });
     markers.set(loc.id, m);
@@ -1890,6 +1918,10 @@ function fmtDayDate(ymd) {
 
 /* ---------- console: render ---------- */
 function renderConsole(list) {
+  // Never rebuild the board under an active drag — the drop targets are live
+  // DOM nodes, and yanking them mid-gesture turns a good drop into a no-op.
+  // cdragDrop() calls render() itself, so the board catches up on release.
+  if (typeof cdrag !== "undefined" && cdrag && cdrag.lifted) return;
   const el = document.getElementById("console");
   const lanes = consoleLanes(list);
   const ideas = visibleIdeas();
@@ -1954,6 +1986,7 @@ function locCardHtml(loc, lane) {
     <article class="ccard s-${esc(loc.status)}" data-id="${esc(loc.id)}" data-kind="loc"
       ${draggable ? `data-drag="1"` : ""} data-src-lane="${esc(lane.key)}"
       tabindex="0" role="button" aria-label="Open ${esc(loc.title || "Untitled")}">
+      ${draggable ? `<span class="ccard-grip" aria-hidden="true" title="Drag to another lane">⠿</span>` : ""}
       <div class="ccard-t">${esc(loc.title || "Untitled")}<span class="badge ${esc(loc.status)}">${STATUS[loc.status].label}</span></div>
       <div class="ccard-m">📍 ${esc(loc.neighbourhood || "—")} · ${esc(loc.category || "")}</div>
       ${chips.length ? `<div class="chips">${chips.map((c) => `<span class="chip">${c}</span>`).join("")}</div>` : ""}
@@ -2040,7 +2073,7 @@ async function consoleAction(el, e) {
   if (act === "set-group") { setConsoleGroup(el.dataset.group); return; }
   if (act === "to-map") { setView("map"); return; }
   if (act === "toggle-archived") { showArchivedIdeas = !showArchivedIdeas; render(); return; }
-  if (act === "new-day") { openDays(); startNewDay(); return; }
+  if (act === "new-day") { if (openDays()) await startNewDay(); return; }   // guard declined → no stray day row
   if (act === "open-day") { openDays(el.dataset.day); return; }
   if (act === "capture-image") { pickIdeaImage(); return; }
 
@@ -2191,6 +2224,10 @@ document.getElementById("console").addEventListener("pointerdown", (e) => {
   const card = e.target.closest(".ccard[data-drag]");
   if (!card) return;
   if (e.target.closest("button, a, input, select, textarea")) return;
+  // Touch drags must start on the ⠿ grip — the grip is the only element with
+  // touch-action:none, so a swipe on the card body stays a native scroll.
+  // Mouse can grab anywhere (touch-action doesn't constrain mice).
+  if (e.pointerType !== "mouse" && !e.target.closest(".ccard-grip")) return;
   cdrag = {
     pointerId: e.pointerId,
     touch: e.pointerType !== "mouse",
@@ -2230,6 +2267,9 @@ document.addEventListener("pointercancel", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && cdrag && cdrag.lifted) { e.preventDefault(); cdragCleanup(); }
 });
+// An alert() or tab switch mid-drag steals the pointerup — without this, the
+// ghost keeps chasing the cursor and `cdrag` blocks every future drag.
+window.addEventListener("blur", () => { if (cdrag) cdragCleanup(); });
 
 function cdragLift() {
   if (!cdrag || cdrag.lifted) return;
@@ -2349,7 +2389,16 @@ function cdragCleanup() {
   document.body.classList.remove("cdragging");
   const wasLifted = cdrag.lifted;
   cdrag = null;
-  if (wasLifted) { consoleDragJustEnded = true; setTimeout(() => { consoleDragJustEnded = false; }, 0); }
+  if (wasLifted) {
+    consoleDragJustEnded = true;
+    setTimeout(() => { consoleDragJustEnded = false; }, 0);
+    // Esc-cancel keeps the button held: the eventual release still emits a
+    // click over whatever's under the cursor. Swallow exactly one click, in
+    // the capture phase, so a cancelled drag can't "open" the card it was on.
+    const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); document.removeEventListener("click", swallow, true); };
+    document.addEventListener("click", swallow, true);
+    setTimeout(() => document.removeEventListener("click", swallow, true), 800);
+  }
 }
 
 /* ---------- PWA: offline field use (see sw.js for the caching strategies) ---------- */

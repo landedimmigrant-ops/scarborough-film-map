@@ -149,27 +149,30 @@ async function fetchLinkTitle(rawUrl) {
   try {
     const u = new URL(rawUrl);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    // One 4 s deadline covers headers AND body: the abort fires mid-read too,
+    // so a slow-drip server can't keep the read loop alive past it. (The
+    // Workers runtime refuses to follow redirects to non-http(s) schemes, so
+    // the protocol check on the initial URL is not widened by 'follow'.)
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 4000);
-    let res;
+    let html = '';
     try {
-      res = await fetch(u.toString(), {
+      const res = await fetch(u.toString(), {
         signal: ctrl.signal,
         redirect: 'follow',
         headers: { 'Accept': 'text/html', 'User-Agent': 'ScarboroughFilmMap/1.0 (link titles)' },
       });
+      if (!res.ok || !(res.headers.get('content-type') || '').includes('text/html')) return null;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      while (html.length < 65536) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        html += decoder.decode(value, { stream: true });
+        if (/<\/title>/i.test(html)) break;
+      }
+      try { await reader.cancel(); } catch (e) { /* stream already done */ }
     } finally { clearTimeout(t); }
-    if (!res.ok || !(res.headers.get('content-type') || '').includes('text/html')) return null;
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let html = '';
-    while (html.length < 65536) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      html += decoder.decode(value, { stream: true });
-      if (/<\/title>/i.test(html)) break;
-    }
-    try { await reader.cancel(); } catch (e) { /* stream already done */ }
     const m = html.match(/<title[^>]*>([^<]*)<\/title>/i);
     if (!m) return null;
     const title = m[1]

@@ -99,16 +99,6 @@
       <div class="panel-body" id="planner-body"></div>
     </section>
 
-    <!-- Printable day sheet: full-screen on screen, the ONLY thing on paper.
-         Readable as-is on an iPad; the Print button hands it to AirPrint/PDF. -->
-    <div id="daysheet" hidden>
-      <div class="sheet-toolbar">
-        <button class="btn ghost" id="sheet-close">✕ Close</button>
-        <button class="btn primary" id="sheet-print">🖨 Print / PDF</button>
-      </div>
-      <div id="daysheet-body"></div>
-    </div>
-
     <button id="sidebar-toggle" class="mobile-only" title="Toggle list">☰ Locations</button>
 
     <!-- Map overlay controls -->
@@ -120,6 +110,19 @@
     <button id="sat-toggle" title="Switch between street map and satellite imagery">🛰 Satellite</button>
     <button id="explore-toggle" title="Click anywhere on the map to learn about the neighbourhood and nearby landmarks">🔍 What's here?</button>
     <div id="mode-pill" hidden>🔍 Explore mode — click the map for info</div>
+  </div>
+
+  <!-- Printable day sheet. DELIBERATELY OUTSIDE #app: the print stylesheet
+       hides #app wholesale, and display:none on an ancestor would take the
+       sheet down with it — nesting this inside #app prints blank pages.
+       Full-screen overlay on screen; readable as-is on an iPad; the Print
+       button hands it to AirPrint/PDF. -->
+  <div id="daysheet" hidden>
+    <div class="sheet-toolbar">
+      <button class="btn ghost" id="sheet-close">✕ Close</button>
+      <button class="btn primary" id="sheet-print">🖨 Print / PDF</button>
+    </div>
+    <div id="daysheet-body"></div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
