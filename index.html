@@ -2,108 +2,72 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
-  <title>Scarborough Film Map</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Scarborough — a documentary</title>
+  <meta name="description" content="A landscape documentary about the whole of Scarborough — its history, its cultures, and the people who carry both. In production now." />
   <meta name="theme-color" content="#0f1419" />
-  <link rel="manifest" href="manifest.webmanifest" />
+  <meta property="og:title" content="Scarborough — a documentary" />
+  <meta property="og:description" content="A landscape film about the whole of Scarborough, told through its places and the people who know them." />
+  <meta property="og:type" content="website" />
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="Film Map" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <script>
+    // Installed-PWA safety net: home-screen installs made before the console
+    // moved to /app/ still open "/" — send them straight into the app.
+    if (window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true) {
+      window.location.replace("/app/");
+    }
+  </script>
+  <link rel="stylesheet" href="landing.css" />
 </head>
 <body>
-  <div id="app">
-    <aside id="sidebar">
-      <header class="side-head">
-        <h1>Scarborough <span>Film Map</span></h1>
-        <div class="project-bar">
-          <select id="project-select" title="Active project"></select>
-          <button id="rename-project" class="icon-btn" title="Rename this project" aria-label="Rename this project">✎</button>
-          <button id="new-project" class="icon-btn" title="New project" aria-label="New project">＋</button>
-        </div>
-        <p class="tagline">Click the map to add a location.</p>
-      </header>
+  <main id="page">
 
-      <div class="controls">
-        <label class="search-label" for="search">🔍 Filter saved locations</label>
-        <input id="search" type="search" placeholder="Search locations, people, notes…" autocomplete="off" aria-label="Filter saved locations" />
-        <div class="row">
-          <select id="filter-status">
-            <option value="">All statuses</option>
-            <option value="idea">Idea</option>
-            <option value="scouting">Scouting</option>
-            <option value="confirmed">Confirmed</option>
-            <option value="shot">Shot</option>
-          </select>
-          <select id="filter-hood"><option value="">All neighbourhoods</option></select>
-        </div>
-        <div class="row">
-          <button id="use-location" class="btn ghost" title="Drop a pin at your current GPS location">📍 My location</button>
-          <button id="plan-day" class="btn ghost" title="Build a shoot list from nearby locations">🗓 Plan a day</button>
-        </div>
-        <div class="row">
-          <button id="review-suggestions" class="btn ghost" title="Review locations people have suggested">💡 Suggestions<span id="sugg-badge" class="badge" hidden>0</span></button>
-        </div>
+    <header class="hero">
+      <p class="kicker">A documentary in production · Toronto</p>
+      <h1>SCARBOROUGH</h1>
+      <p class="sub">A landscape film about the whole of a place.</p>
+      <div class="frame" role="img" aria-label="A widescreen frame: dusk sky over the Scarborough Bluffs and Lake Ontario">
+        <div class="sky"></div>
+        <div class="bluffs"></div>
+        <div class="lake"></div>
       </div>
+    </header>
 
-      <div class="stats" id="stats"></div>
-      <div id="list" class="list"><div class="empty">Loading your locations…</div></div>
-
-      <footer class="side-foot">
-        <div class="foot-actions">
-          <button id="export" class="btn ghost" title="Download this project as JSON">⭳ JSON</button>
-          <button id="export-scenes" class="btn ghost" title="Markdown scene list for script-writing">📝 Scenes</button>
-          <button id="export-credits" class="btn ghost" title="Contributor credits list (only those who consented)">🎬 Credits</button>
-        </div>
-        <span class="count" id="count">0 locations</span>
-      </footer>
-    </aside>
-
-    <main id="map"></main>
-
-    <!-- Location detail / editor -->
-    <section id="detail" class="panel" role="dialog" aria-modal="true" aria-labelledby="detail-h" tabindex="-1" hidden>
-      <header class="panel-head">
-        <strong id="detail-h">Location</strong>
-        <button class="icon-btn" id="detail-close" title="Close" aria-label="Close">✕</button>
-      </header>
-      <div class="panel-body" id="detail-body"></div>
+    <section class="about">
+      <h2>The film</h2>
+      <p>
+        Scarborough gets talked about more than it gets seen. This film gives it the frame:
+        the bluffs and the creeks, the towers and the strip plazas, the temples and churches
+        that share parking lots, the farmland it was and the city it became.
+      </p>
+      <p>
+        Scarborough occupies a rare historical and cultural space in the world — a suburb that
+        grew into one of the most multicultural places anywhere, and did it quietly, plaza by
+        plaza. The film tells the tale of the city through interviews with the people who live
+        it, moving across its landscapes and its points of view: the shoreline and the
+        high-rise, the kitchen and the congregation, the long memory and the new arrival.
+      </p>
+      <p>
+        It is being made from the ground, one location at a time.
+      </p>
     </section>
 
-    <!-- Suggestion review queue -->
-    <section id="suggestions" class="panel" role="dialog" aria-modal="true" aria-label="Review suggested locations" tabindex="-1" hidden>
-      <header class="panel-head">
-        <strong>💡 Suggested locations</strong>
-        <button class="icon-btn" id="suggestions-close" title="Close" aria-label="Close">✕</button>
-      </header>
-      <div class="panel-body" id="suggestions-body"></div>
+    <section class="contribute">
+      <h2>Put your Scarborough on the map</h2>
+      <p>
+        The locations are the spine of this film — corners, businesses, parks and buildings
+        that actually mean something here. If you know a place that belongs in it, put it on
+        the map. Two minutes, and you can be credited in the film if we shoot there.
+      </p>
+      <a class="cta" href="/suggest">Suggest a location →</a>
     </section>
 
-    <!-- Shoot-day planner -->
-    <section id="planner" class="panel" role="dialog" aria-modal="true" aria-label="Plan a shoot day" tabindex="-1" hidden>
-      <header class="panel-head">
-        <strong>🗓 Plan a shoot day</strong>
-        <button class="icon-btn" id="planner-close" title="Close" aria-label="Close">✕</button>
-      </header>
-      <div class="panel-body" id="planner-body"></div>
-    </section>
+    <footer class="foot">
+      <span>© 2026 · A documentary in production</span>
+      <a class="quiet" href="/app/">Production console</a>
+    </footer>
 
-    <button id="sidebar-toggle" class="mobile-only" title="Toggle list">☰ Locations</button>
-
-    <!-- Map overlay controls -->
-    <div id="place-search">
-      <label class="search-label" for="place-q">📍 Find a place on the map</label>
-      <input id="place-q" type="search" placeholder="Search any address or place…" autocomplete="off" aria-label="Find a place on the map to add" />
-      <ul id="place-results" hidden></ul>
-    </div>
-    <button id="sat-toggle" title="Switch between street map and satellite imagery">🛰 Satellite</button>
-    <button id="explore-toggle" title="Click anywhere on the map to learn about the neighbourhood and nearby landmarks">🔍 What's here?</button>
-    <div id="mode-pill" hidden>🔍 Explore mode — click the map for info</div>
-  </div>
-
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="app.js"></script>
+  </main>
 </body>
 </html>

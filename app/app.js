@@ -77,7 +77,9 @@ async function api(path, { method = "GET", body, raw, contentType } = {}) {
     init.body = JSON.stringify(body);
     init.headers["Content-Type"] = "application/json";
   }
-  const res = await fetch(`api/${path}`, init);
+  // Absolute path: the app now lives under /app/, but the Function stays mounted
+  // at /api/* (functions/ directory layout defines the URL, not this file's home).
+  const res = await fetch(`/api/${path}`, init);
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { /* non-JSON — handled below */ }
@@ -272,10 +274,10 @@ new ResizeObserver(fitWhenReady).observe(map.getContainer());
 // Boot: load geojson + the /api/db snapshot in parallel, then render
 (async function boot() {
   const [geoRes, boundaryRes, dbRes, blurbsData] = await Promise.all([
-    fetch("data/scarborough.geojson").then((r) => r.json()),
-    fetch("data/scarborough-boundary.geojson").then((r) => r.json()),
+    fetch("/data/scarborough.geojson").then((r) => r.json()),
+    fetch("/data/scarborough-boundary.geojson").then((r) => r.json()),
     loadDB(),
-    fetch("data/neighbourhood-blurbs.json").then((r) => r.json()).catch(() => ({})),
+    fetch("/data/neighbourhood-blurbs.json").then((r) => r.json()).catch(() => ({})),
   ]);
   hoodBlurbs = blurbsData || {};
 
@@ -1311,7 +1313,7 @@ document.addEventListener("click", (e) => {
 /* ---------- PWA: offline field use (see sw.js for the caching strategies) ---------- */
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js", { updateViaCache: "none" })
+    navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" })
       .catch((e) => console.error("SW registration failed:", e));
   });
 }

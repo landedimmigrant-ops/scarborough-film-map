@@ -11,7 +11,7 @@
    - GET /api/photo/<key>: cache-first under the tile cap — R2 keys are uuids, so a cached
      photo is never stale, and reference shots stay visible in the field with no signal
    - Nominatim / Overpass / Wikipedia: network only (usage policies + the app degrades gracefully) */
-const VERSION = "sfm-v2";   // bumped by the Supabase→Neon migration: old caches hold dead API URLs
+const VERSION = "sfm-v3";   // bumped for the /app/ restructure: v2 caches hold the app shell at "/"
 const SHELL = `${VERSION}-shell`;
 const CDN = `${VERSION}-cdn`;
 const TILES = `${VERSION}-tiles`;
@@ -20,10 +20,17 @@ const PHOTOS = `${VERSION}-photos`;
 const TILE_CAP = 400;
 const PHOTO_CAP = 300;
 
+/* The console app lives under /app/ since the landing page took the root.
+   This worker stays at /sw.js (same URL as v2) so existing installs upgrade in
+   place — one deploy, old caches purged on activate, no orphan worker left at
+   root scope. The landing ("/") is precached too: it's the PWA's start page for
+   installs made before start_url moved to /app/, and it redirects those to the
+   app, so it has to work offline as well. */
 const PRECACHE = [
-  "./", "index.html", "styles.css", "app.js", "manifest.webmanifest",
-  "data/scarborough.geojson", "data/scarborough-boundary.geojson", "data/neighbourhood-blurbs.json",
-  "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png",
+  "/", "/index.html", "/app/", "/app/index.html", "/app/styles.css", "/app/app.js",
+  "/manifest.webmanifest",
+  "/data/scarborough.geojson", "/data/scarborough-boundary.geojson", "/data/neighbourhood-blurbs.json",
+  "/icons/icon-192.png", "/icons/icon-512.png", "/icons/apple-touch-icon.png",
 ];
 const CDN_PRECACHE = [
   "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css",

@@ -1,0 +1,135 @@
+/* Scarborough — a documentary · public landing page
+   Same palette as the console app (see app/styles.css), no external assets:
+   the hero "frame" is a 2.39:1 letterboxed dusk over the Bluffs drawn in CSS. */
+
+:root {
+  --bg: #0f1419;
+  --panel: #161c24;
+  --line: #2a333f;
+  --text: #e6edf3;
+  --muted: #8a97a6;
+  --accent: #4ea1ff;
+  --amber: #f0a93b;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+#page { max-width: 860px; margin: 0 auto; padding: 0 24px; }
+
+/* ---------- hero ---------- */
+.hero { padding: 72px 0 8px; text-align: center; }
+.kicker {
+  margin: 0 0 18px;
+  font-size: 12px;
+  letter-spacing: .22em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.hero h1 {
+  margin: 0;
+  font-size: clamp(40px, 9.6vw, 88px);
+  font-weight: 800;
+  letter-spacing: .045em;
+  line-height: 1;
+  /* dusk gradient through the letterforms */
+  background: linear-gradient(180deg, #e6edf3 0%, #9fb7d1 55%, #4ea1ff 130%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.hero .sub {
+  margin: 18px 0 44px;
+  font-size: clamp(16px, 2.6vw, 21px);
+  color: var(--muted);
+}
+
+/* The widescreen frame: sky, bluff face, lake — pure CSS, prints nothing wrong,
+   loads nothing. 2.39:1, the aspect the film is shot in. */
+.frame {
+  position: relative;
+  aspect-ratio: 2.39 / 1;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .5);
+}
+.frame .sky {
+  position: absolute; inset: 0 0 38% 0;
+  background:
+    radial-gradient(120% 90% at 50% 100%, rgba(240, 169, 59, .32) 0%, rgba(240, 169, 59, 0) 55%),
+    linear-gradient(180deg, #0b1220 0%, #14263d 62%, #3d4a63 100%);
+}
+.frame .bluffs {
+  /* flat-topped cliff line — the Bluffs are plateaus with sheer faces, not peaks */
+  position: absolute; left: 0; right: 0; bottom: 32%; height: 24%;
+  background: linear-gradient(180deg, #1c2532 0%, #10161f 85%);
+  clip-path: polygon(
+    0 100%, 0 34%, 9% 34%, 11% 52%, 20% 52%, 21% 22%, 36% 22%, 38% 44%,
+    47% 44%, 48% 12%, 63% 12%, 65% 38%, 74% 38%, 75% 26%, 88% 26%, 90% 56%, 100% 56%, 100% 100%);
+}
+.frame .lake {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 32.5%;
+  background:
+    radial-gradient(90% 130% at 55% 0%, rgba(240, 169, 59, .09) 0%, rgba(240, 169, 59, 0) 55%),
+    linear-gradient(180deg, #131c29 0%, #0a0f16 100%);
+}
+
+/* ---------- sections ---------- */
+section { padding: 56px 0 8px; max-width: 640px; margin: 0 auto; }
+section h2 {
+  font-size: 13px;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 18px;
+}
+section p { margin: 0 0 18px; font-size: 17px; color: #c7d2dd; }
+
+.contribute {
+  border-top: 1px solid var(--line);
+  margin-top: 48px;
+}
+.cta {
+  display: inline-block;
+  margin: 10px 0 8px;
+  padding: 14px 26px;
+  background: var(--accent);
+  color: #0c1117;
+  font-weight: 700;
+  font-size: 16px;
+  border-radius: 10px;
+  text-decoration: none;
+}
+.cta:hover { filter: brightness(1.1); }
+.cta:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+
+/* ---------- footer ---------- */
+.foot {
+  margin-top: 72px;
+  padding: 22px 0 34px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.foot .quiet { color: var(--muted); text-decoration: none; }
+.foot .quiet:hover { color: var(--accent); }
+
+@media (max-width: 560px) {
+  .hero { padding-top: 48px; }
+  section { padding-top: 44px; }
+  section p { font-size: 16px; }
+}
