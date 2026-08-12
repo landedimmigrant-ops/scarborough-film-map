@@ -23,6 +23,10 @@
           <button id="rename-project" class="icon-btn" title="Rename this project" aria-label="Rename this project">✎</button>
           <button id="new-project" class="icon-btn" title="New project" aria-label="New project">＋</button>
         </div>
+        <div class="viewtoggle" role="group" aria-label="Workspace view">
+          <button id="view-map" class="vt-btn active" aria-pressed="true">🗺 Map</button>
+          <button id="view-console" class="vt-btn" aria-pressed="false">🎬 Console</button>
+        </div>
         <p class="tagline">Click the map to add a location.</p>
       </header>
 
@@ -63,6 +67,11 @@
 
     <main id="map"></main>
 
+    <!-- Filmmaker console: the same records as the map, organized as a board.
+         Lanes group by status / type / neighbourhood / shoot day; the sidebar's
+         search + filters apply here too. Rendered entirely by renderConsole(). -->
+    <section id="console" aria-label="Filmmaker console" hidden></section>
+
     <!-- Location detail / editor -->
     <section id="detail" class="panel" role="dialog" aria-modal="true" aria-labelledby="detail-h" tabindex="-1" hidden>
       <header class="panel-head">
@@ -89,6 +98,16 @@
       </header>
       <div class="panel-body" id="planner-body"></div>
     </section>
+
+    <!-- Printable day sheet: full-screen on screen, the ONLY thing on paper.
+         Readable as-is on an iPad; the Print button hands it to AirPrint/PDF. -->
+    <div id="daysheet" hidden>
+      <div class="sheet-toolbar">
+        <button class="btn ghost" id="sheet-close">✕ Close</button>
+        <button class="btn primary" id="sheet-print">🖨 Print / PDF</button>
+      </div>
+      <div id="daysheet-body"></div>
+    </div>
 
     <button id="sidebar-toggle" class="mobile-only" title="Toggle list">☰ Locations</button>
 

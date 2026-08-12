@@ -125,6 +125,34 @@ function rowToLoc(row, interviews, contacts, media) {
   };
 }
 
+function rowToIdea(row) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    kind: row.kind || "note",
+    title: row.title || "",
+    body: row.body || "",
+    url: row.url || "",
+    locationId: row.location_id || null,
+    status: row.status || "inbox",
+    createdAt: new Date(row.created_at).getTime(),
+  };
+}
+function rowToDay(row, stops) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    title: row.title || "",
+    date: row.date || "",          // 'YYYY-MM-DD' string straight off the wire — never Date-parsed
+    notes: row.notes || "",
+    createdAt: new Date(row.created_at).getTime(),
+    stops: (stops || []).map((s) => ({
+      id: s.id, locationId: s.location_id,
+      plannedTime: s.planned_time || "", note: s.note || "",
+    })),
+  };
+}
+
 async function loadDB() {
   // One request returns the whole snapshot — projects, locations (lat/lng already
   // decoded out of the geography column by locations_view) and every child row.
@@ -141,6 +169,10 @@ async function loadDB() {
     return rowToLoc(row, byLoc(snap.interviews, row.id), byLoc(snap.contacts, row.id), byLoc(snap.media, row.id));
   });
 
+  const ideas = (snap.ideas || []).map(rowToIdea);
+  const shootDays = (snap.shootDays || []).map((row) =>
+    rowToDay(row, (snap.shootDayStops || []).filter((s) => s.day_id === row.id)));
+
   const projects = (snap.projects || []).map((p) => ({ id: p.id, name: p.name, createdAt: new Date(p.created_at).getTime() }));
   if (!projects.length) { apiFailed("loadDB", new Error("no projects returned")); return null; }
 
@@ -154,7 +186,7 @@ async function loadDB() {
     };
   });
 
-  return { projects, activeProjectId: projects[0].id, locations };
+  return { projects, activeProjectId: projects[0].id, locations, ideas, shootDays };
 }
 
 async function saveLocation(loc) {
@@ -176,6 +208,43 @@ async function deleteLocation(id) {
   catch (e) { apiFailed("deleteLocation", e); return false; }
 }
 
+/* --- ideas + shoot days: same contract as the location writers ---
+   (null/false on failure, lastApiError says why, caller keeps state) */
+async function saveIdeaApi(idea) {
+  try {
+    const out = await api("ideas", { method: "POST", body: idea });
+    if (!out || !out.id) throw new Error("no id returned");
+    idea.id = out.id;
+    if (out.title && !idea.title) idea.title = out.title;   // server-fetched link title
+    if (out.createdAt && !idea.createdAt) idea.createdAt = new Date(out.createdAt).getTime();
+    return out.id;
+  } catch (e) { apiFailed("saveIdea", e); return null; }
+}
+async function deleteIdeaApi(id) {
+  try { await api(`ideas/${encodeURIComponent(id)}`, { method: "DELETE" }); return true; }
+  catch (e) { apiFailed("deleteIdea", e); return false; }
+}
+async function saveDayApi(day) {
+  try {
+    const out = await api("days", {
+      method: "POST",
+      body: {
+        id: day.id, projectId: day.projectId, title: day.title, date: day.date,
+        notes: day.notes,
+        stops: day.stops.map((s) => ({ locationId: s.locationId, plannedTime: s.plannedTime, note: s.note })),
+      },
+    });
+    if (!out || !out.id) throw new Error("no id returned");
+    day.id = out.id;
+    if (out.createdAt && !day.createdAt) day.createdAt = new Date(out.createdAt).getTime();
+    return out.id;
+  } catch (e) { apiFailed("saveDay", e); return null; }
+}
+async function deleteDayApi(id) {
+  try { await api(`days/${encodeURIComponent(id)}`, { method: "DELETE" }); return true; }
+  catch (e) { apiFailed("deleteDay", e); return false; }
+}
+
 async function saveProject(proj) {
   if (proj._isNew) {
     try {
@@ -194,9 +263,16 @@ async function renameProject(id, name) {
 // Legacy save() kept as a no-op so existing event handlers don't break during init
 function save() {}
 
-let db = { projects: [], activeProjectId: null, locations: [] };
+let db = { projects: [], activeProjectId: null, locations: [], ideas: [], shootDays: [] };
 function activeProject() { return db.projects.find((p) => p.id === db.activeProjectId) || db.projects[0]; }
 function projectLocs() { return db.locations.filter((l) => l.projectId === db.activeProjectId); }
+function projectIdeas() { return (db.ideas || []).filter((i) => i.projectId === db.activeProjectId); }
+function projectDays() {
+  // dated days first in date order, undated after, stable by creation
+  return (db.shootDays || []).filter((d) => d.projectId === db.activeProjectId)
+    .slice().sort((a, b) => (a.date || "9999") < (b.date || "9999") ? -1 : (a.date || "9999") > (b.date || "9999") ? 1 : a.createdAt - b.createdAt);
+}
+function locById(id) { return db.locations.find((l) => l.id === id); }
 
 /* ---------- migrate localStorage → the database ---------- */
 async function migrateLocalStorage() {
@@ -249,6 +325,11 @@ const markers = new Map();
 let editing = null, isNewLoc = false, plannerAnchor = null, planCircle = null;
 let hoodBlurbs = {}, exploreMode = false, tempMarker = null, enrichToken = 0, lastFocused = null;
 let dirtyEdit = false, dbLoadFailed = false;
+let activeView = "map";                       // "map" | "console"
+let consoleGroup = localStorage.getItem("sfm_console_group") || "status";
+let pendingIdeaId = null;                     // an idea waiting for a map click to become a location
+let editingIdeaId = null;                     // idea card in inline-edit mode
+let showArchivedIdeas = false;
 
 /* ---------- map ---------- */
 const map = L.map("map", { zoomControl: true }).setView([43.773, -79.233], 12);
@@ -406,6 +487,7 @@ function openDetail(source, isNew) {
     <div class="field"><label>Address (auto)</label><input id="f-address" value="${esc(editing.address)}" placeholder="auto-filled from the map"></div>
     <a id="gmaps-link" class="ext-link" href="${gmapsUrl(editing)}" target="_blank" rel="noopener">🧭 Open in Google Maps ↗</a>
     ${creditLine(editing)}
+    ${linkedIdeasBlock(editing)}
     <div class="field"><div class="row2">
       <div style="flex:1"><label>Status</label>${selectHtml("f-status", Object.keys(STATUS).map((k) => [k, STATUS[k].label]), editing.status)}</div>
       <div style="flex:1"><label>Type</label>${selectHtml("f-category", CATEGORIES.map((c) => [c, c]), editing.category)}</div>
@@ -508,6 +590,23 @@ function renderPhotos() {
   });
   wrap.appendChild(grid);
 }
+/* Ideas that were placed here or attached here, resurfaced where they're
+   needed — read-only context, edited from the console's Ideas lane. */
+function linkedIdeasBlock(loc) {
+  if (!loc.id) return "";
+  const linked = (db.ideas || []).filter((i) => i.locationId === loc.id);
+  if (!linked.length) return "";
+  const row = (i) => {
+    const icon = i.kind === "link" ? "🔗" : i.kind === "image" ? "🖼" : "📝";
+    const label = i.title || i.body.slice(0, 60) || i.url;
+    const inner = i.url
+      ? `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(label)}</a>`
+      : esc(label);
+    return `<div class="linked-idea">${icon} ${inner}${i.body && i.title ? `<span class="li-body">${esc(i.body.slice(0, 90))}</span>` : ""}</div>`;
+  };
+  return `<div class="linked-ideas"><label>💡 Ideas filed here</label>${linked.map(row).join("")}</div>`;
+}
+
 /* ---------- reference-photo upload (Cloudflare R2, via POST /api/photo) ---------- */
 // phones hand over 3–12 MB originals; a 1600px JPEG is plenty for scouting reference
 async function compressImage(file, maxDim = 1600, quality = 0.82) {
@@ -578,6 +677,17 @@ async function saveDetail() {
   }
   if (isNewLoc) { db.locations.push(editing); isNewLoc = false; }
   else { const i = db.locations.findIndex((l) => l.id === editing.id); if (i >= 0) db.locations[i] = editing; }
+  // A location born from a captured idea: link the idea to its pin and file it
+  // as done. Best-effort — the location is already saved either way.
+  if (editing._fromIdeaId) {
+    const idea = db.ideas.find((i) => i.id === editing._fromIdeaId);
+    delete editing._fromIdeaId;
+    if (idea) {
+      idea.locationId = locId;
+      idea.status = "archived";
+      saveIdeaApi(idea).then((ok) => { if (!ok) console.error("couldn't link idea to its new location:", lastApiError); });
+    }
+  }
   closeDetail(true); render();
   return locId;
 }
@@ -605,6 +715,8 @@ function openPlanner(anchor) {
   captureFocus();
   plannerAnchor = anchor;
   const panel = document.getElementById("planner");
+  const head = panel.querySelector(".panel-head strong");
+  if (head) head.textContent = "⚡ Radius plan";
   panel.hidden = false;
   renderPlanner(2);
   panel.focus();
@@ -623,13 +735,17 @@ function renderPlanner(km) {
     <div class="plan-item"><b>${esc(a.title)}</b> <span class="dist">0.0 km</span><div class="pm">${planMeta(a)}</div></div>
     ${near.length ? near.map((x) => `<div class="plan-item"><b>${esc(x.l.title)}</b> <span class="dist">${x.d.toFixed(1)} km</span><div class="pm">${planMeta(x.l)}</div></div>`).join("")
       : `<div class="empty-mini" style="margin:10px 0">No other locations within ${km.toFixed(1)} km — widen the radius.</div>`}
-    <div class="panel-actions"><button class="btn primary" id="plan-export">⭳ Export shoot list</button></div>`;
+    <div class="panel-actions">
+      <button class="btn ghost" id="plan-export">⭳ Text</button>
+      <button class="btn primary" id="plan-save-day">💾 Save as shoot day</button>
+    </div>`;
   document.getElementById("plan-anchor").onchange = (e) => {
     const next = projectLocs().find((l) => l.id === e.target.value);
     if (next) { plannerAnchor = next; renderPlanner(km); }
   };
   document.getElementById("r-range").addEventListener("input", (e) => renderPlanner(parseFloat(e.target.value)));
   document.getElementById("plan-export").onclick = () => exportShootList(a, km, near);
+  document.getElementById("plan-save-day").onclick = () => saveRadiusPlanAsDay(a, near);
   drawPlanCircle(a, km);
 }
 function drawPlanCircle(a, km) {
@@ -638,12 +754,335 @@ function drawPlanCircle(a, km) {
   map.fitBounds(planCircle.getBounds(), { padding: [40, 40] });
 }
 function closePlanner() {
+  flushDaySaveNow();                 // an in-flight edit must not die with the panel
   document.getElementById("planner").hidden = true;
   if (planCircle) { map.removeLayer(planCircle); planCircle = null; }
   plannerAnchor = null;
+  daysMode = "list";
   restoreFocus();
 }
 document.getElementById("planner-close").onclick = closePlanner;
+
+/* ══════════════════════════════════════════════════════════════
+   SHOOT DAYS — the manual planner. A day is a title + date + notes and an
+   ORDERED list of stops (each with a planned time and a note). It lives in
+   Postgres (shoot_days / shoot_day_stops), so the same plan is on the phone
+   and the iPad. The radius planner above stays as the quick generator; its
+   "Save as shoot day" hands its result to this.
+
+   Saves are automatic and debounced; the panel says "Saving… / Saved ✓ /
+   Couldn't save" honestly (same contract as the editor's Save button).
+══════════════════════════════════════════════════════════════ */
+let daysMode = "list", editingDayId = null, daySaveTimer = null, daySaveDay = null, daySaveState = "";
+
+function dayById(id) { return db.shootDays.find((d) => d.id === id); }
+function dayTotalKm(day) {
+  let total = 0;
+  for (let i = 1; i < day.stops.length; i++) {
+    const a = locById(day.stops[i - 1].locationId), b = locById(day.stops[i].locationId);
+    if (a && b) total += distKm(a, b);
+  }
+  return total;
+}
+
+function openDays(dayId) {
+  if (!closeDetail()) return;
+  captureFocus();
+  closeSuggestions();
+  if (planCircle) { map.removeLayer(planCircle); planCircle = null; }
+  plannerAnchor = null;
+  daysMode = dayId ? "edit" : "list";
+  editingDayId = dayId || null;
+  const panel = document.getElementById("planner");
+  panel.hidden = false;
+  renderDaysPanel();
+  panel.focus();
+}
+
+async function startNewDay() {
+  const day = { id: null, projectId: db.activeProjectId, title: "", date: "", notes: "", createdAt: Date.now(), stops: [] };
+  if (!(await saveDayApi(day))) {
+    alert(`Couldn't create a shoot day.${lastApiError ? `\n\n${lastApiError}` : ""}`);
+    return;
+  }
+  db.shootDays.push(day);
+  daysMode = "edit";
+  editingDayId = day.id;
+  renderDaysPanel();
+  const t = document.getElementById("day-title");
+  if (t) t.focus();
+  render();
+}
+
+function scheduleDaySave(day) {
+  daySaveDay = day;
+  daySaveState = "Saving…";
+  paintDaySaveState();
+  clearTimeout(daySaveTimer);
+  daySaveTimer = setTimeout(() => flushDaySaveNow(), 600);
+}
+async function flushDaySaveNow() {
+  clearTimeout(daySaveTimer);
+  daySaveTimer = null;
+  const day = daySaveDay;
+  if (!day) return;
+  daySaveDay = null;
+  const ok = await saveDayApi(day);
+  daySaveState = ok ? "Saved ✓" : `Couldn't save${lastApiError ? ` — ${lastApiError}` : ""} (edits kept; change anything to retry)`;
+  paintDaySaveState();
+  if (!ok && day) daySaveDay = day;   // the next mutation retries
+}
+function paintDaySaveState() {
+  const el = document.getElementById("day-save-state");
+  if (el) { el.textContent = daySaveState; el.classList.toggle("err", daySaveState.startsWith("Couldn't")); }
+}
+
+function renderDaysPanel() {
+  const head = document.querySelector("#planner .panel-head strong");
+  const body = document.getElementById("planner-body");
+  if (daysMode === "edit" && editingDayId && dayById(editingDayId)) {
+    if (head) head.textContent = "🗓 Shoot day";
+    renderDayEditor(body, dayById(editingDayId));
+  } else {
+    if (head) head.textContent = "🗓 Shoot days";
+    renderDaysList(body);
+  }
+}
+
+function renderDaysList(body) {
+  const days = projectDays();
+  const cards = days.map((d) => {
+    const km = dayTotalKm(d);
+    return `
+      <div class="day-card" data-day="${esc(d.id)}" role="button" tabindex="0" aria-label="Open ${esc(d.title || "Untitled day")}">
+        <div class="day-card-t"><b>${esc(d.title || "Untitled day")}</b>${d.date ? `<span class="chip">🗓 ${esc(fmtDayDate(d.date))}</span>` : ""}</div>
+        <div class="day-card-m">${d.stops.length} stop${d.stops.length === 1 ? "" : "s"}${km ? ` · ~${km.toFixed(1)} km` : ""}${d.notes ? ` · ${esc(d.notes.slice(0, 60))}` : ""}</div>
+      </div>`;
+  }).join("");
+  body.innerHTML = `
+    ${days.length ? cards : `<div class="empty-mini" style="margin:10px 0">No shoot days yet. Make one, then drag locations into it from the console — or add stops here.</div>`}
+    <div class="panel-actions">
+      <button class="btn ghost" id="days-quick">⚡ Radius plan</button>
+      <button class="btn primary" id="days-new">＋ New shoot day</button>
+    </div>`;
+  body.querySelectorAll(".day-card").forEach((el) => {
+    const open = () => { daysMode = "edit"; editingDayId = el.dataset.day; renderDaysPanel(); };
+    el.onclick = open;
+    el.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
+  });
+  document.getElementById("days-new").onclick = startNewDay;
+  document.getElementById("days-quick").onclick = () => {
+    const locs = projectLocs();
+    if (!locs.length) { alert("Add a location first, then plan a day around it."); return; }
+    openPlanner(locs[locs.length - 1]);
+  };
+}
+
+function renderDayEditor(body, day) {
+  const locsAll = projectLocs();
+  const inDay = new Set(day.stops.map((s) => s.locationId));
+  const lastStopLoc = day.stops.length ? locById(day.stops[day.stops.length - 1].locationId) : null;
+
+  const stopRows = day.stops.map((s, i) => {
+    const loc = locById(s.locationId);
+    const title = loc ? loc.title || "Untitled" : "(deleted location)";
+    const hood = loc ? loc.neighbourhood : "";
+    let leg = "";
+    if (i > 0) {
+      const prev = locById(day.stops[i - 1].locationId);
+      if (prev && loc) leg = `<div class="leg-line">↓ ${distKm(prev, loc).toFixed(1)} km</div>`;
+    }
+    return `${leg}
+      <div class="stop-row" data-i="${i}">
+        <span class="stop-n">${i + 1}</span>
+        <input class="stop-time" value="${esc(s.plannedTime)}" placeholder="09:00" aria-label="Planned time for stop ${i + 1}" />
+        <div class="stop-main">
+          <div class="stop-t">${esc(title)}</div>
+          <div class="stop-h">${esc(hood)}${loc && loc.address ? ` · ${esc(loc.address)}` : ""}</div>
+          <input class="stop-note" value="${esc(s.note)}" placeholder="Shot / setup note…" aria-label="Note for stop ${i + 1}" />
+        </div>
+        <div class="stop-btns">
+          <button class="icon-btn stop-up" title="Move up" aria-label="Move stop ${i + 1} up" ${i === 0 ? "disabled" : ""}>▲</button>
+          <button class="icon-btn stop-down" title="Move down" aria-label="Move stop ${i + 1} down" ${i === day.stops.length - 1 ? "disabled" : ""}>▼</button>
+          <button class="icon-btn stop-rm" title="Remove stop" aria-label="Remove stop ${i + 1}">✕</button>
+        </div>
+      </div>`;
+  }).join("");
+
+  const km = dayTotalKm(day);
+  body.innerHTML = `
+    <button class="btn ghost day-back" id="day-back">← All days</button>
+    <div class="field"><label>Day title</label><input id="day-title" value="${esc(day.title)}" placeholder="e.g. Friday — Bluffs &amp; waterfront"></div>
+    <div class="field"><div class="row2">
+      <div style="flex:1"><label>Date</label><input id="day-date" type="date" value="${esc(day.date)}"></div>
+      <div style="flex:1;display:flex;align-items:flex-end"><span class="day-save-state" id="day-save-state">${esc(daySaveState)}</span></div>
+    </div></div>
+    <div class="field"><label>Day notes (call time, gear, weather plan)</label><textarea id="day-notes" rows="2">${esc(day.notes)}</textarea></div>
+
+    <div class="subhead">🎬 Stops — in shooting order${km ? `<span class="chip">~${km.toFixed(1)} km total</span>` : ""}</div>
+    <div id="day-stops">${stopRows || `<div class="empty-mini">No stops yet. Add them below, or drag cards into this day from the console.</div>`}</div>
+
+    <div class="field" style="margin-top:10px"><label>Add a stop</label>
+      <input id="stop-search" type="search" placeholder="Search your locations…" autocomplete="off" />
+      <div id="stop-candidates"></div>
+    </div>
+
+    <div class="panel-actions">
+      <button class="btn danger" id="day-delete">Delete</button>
+      <button class="btn ghost" id="day-text">⭳ Text</button>
+      <button class="btn primary" id="day-sheet">🖨 Day sheet</button>
+    </div>`;
+
+  document.getElementById("day-back").onclick = () => { flushDaySaveNow(); daysMode = "list"; renderDaysPanel(); };
+  const bindDay = (id, key) => {
+    const el = document.getElementById(id);
+    el.addEventListener("input", () => { day[key] = el.value; scheduleDaySave(day); if (key === "title" || key === "date") render(); });
+  };
+  bindDay("day-title", "title");
+  bindDay("day-date", "date");
+  bindDay("day-notes", "notes");
+
+  body.querySelectorAll(".stop-row").forEach((row) => {
+    const i = +row.dataset.i;
+    row.querySelector(".stop-time").addEventListener("input", (e) => { day.stops[i].plannedTime = e.target.value; scheduleDaySave(day); });
+    row.querySelector(".stop-note").addEventListener("input", (e) => { day.stops[i].note = e.target.value; scheduleDaySave(day); });
+    row.querySelector(".stop-up").onclick = () => { if (i === 0) return; [day.stops[i - 1], day.stops[i]] = [day.stops[i], day.stops[i - 1]]; scheduleDaySave(day); renderDayEditor(body, day); render(); };
+    row.querySelector(".stop-down").onclick = () => { if (i === day.stops.length - 1) return; [day.stops[i + 1], day.stops[i]] = [day.stops[i], day.stops[i + 1]]; scheduleDaySave(day); renderDayEditor(body, day); render(); };
+    row.querySelector(".stop-rm").onclick = () => { day.stops.splice(i, 1); scheduleDaySave(day); renderDayEditor(body, day); render(); };
+  });
+
+  const searchEl = document.getElementById("stop-search");
+  const candEl = document.getElementById("stop-candidates");
+  const paintCandidates = () => {
+    const q = searchEl.value.toLowerCase().trim();
+    let cands = locsAll.filter((l) => !inDay.has(l.id));
+    if (q) cands = cands.filter((l) => haystack(l).includes(q));
+    // With stops already planned, the useful order is "closest to the last stop";
+    // starting fresh, alphabetical is the honest default.
+    if (lastStopLoc) cands = cands.map((l) => ({ l, d: distKm(lastStopLoc, l) })).sort((a, b) => a.d - b.d).map((x) => Object.assign(x.l, { _d: x.d }));
+    else cands = cands.slice().sort((a, b) => (a.title || "").localeCompare(b.title || ""));
+    candEl.innerHTML = cands.slice(0, 8).map((l) => `
+      <button class="stop-cand" data-id="${esc(l.id)}">
+        <span class="stop-cand-t">${esc(l.title || "Untitled")}</span>
+        <span class="stop-cand-m">${esc(l.neighbourhood)}${lastStopLoc && l._d != null ? ` · ${l._d.toFixed(1)} km` : ""}</span>
+      </button>`).join("") || (q ? `<div class="empty-mini">No match.</div>` : "");
+    candEl.querySelectorAll(".stop-cand").forEach((btn) => {
+      btn.onclick = () => {
+        day.stops.push({ id: null, locationId: btn.dataset.id, plannedTime: "", note: "" });
+        scheduleDaySave(day);
+        renderDayEditor(body, day);
+        render();
+      };
+    });
+  };
+  searchEl.addEventListener("input", paintCandidates);
+  paintCandidates();
+
+  document.getElementById("day-delete").onclick = async () => {
+    if (!confirm(`Delete “${day.title || "Untitled day"}”? The locations themselves stay.`)) return;
+    clearTimeout(daySaveTimer); daySaveDay = null;
+    if (!(await deleteDayApi(day.id))) { alert(`Couldn't delete.${lastApiError ? `\n\n${lastApiError}` : ""}`); return; }
+    db.shootDays = db.shootDays.filter((d) => d.id !== day.id);
+    daysMode = "list";
+    renderDaysPanel();
+    render();
+  };
+  document.getElementById("day-text").onclick = () => exportDayText(day);
+  document.getElementById("day-sheet").onclick = () => { flushDaySaveNow(); openDaySheet(day); };
+}
+
+/* ---------- day sheet (screen + print) ---------- */
+function openDaySheet(day) {
+  const body = document.getElementById("daysheet-body");
+  const stops = day.stops.map((s, i) => {
+    const loc = locById(s.locationId);
+    if (!loc) return `<div class="sh-stop"><div class="sh-stop-head"><span class="sh-n">${i + 1}</span><h3>(deleted location)</h3></div></div>`;
+    const prev = i > 0 ? locById(day.stops[i - 1].locationId) : null;
+    const leg = prev ? `<div class="sh-leg">↓ ${distKm(prev, loc).toFixed(1)} km from previous</div>` : "";
+    const logistics = [
+      loc.category,
+      loc.bestTime && `best light: ${loc.bestTime}`,
+      loc.permit && loc.permit !== "n/a" && `permit: ${loc.permit}`,
+      loc.parking && `parking: ${loc.parking}`,
+    ].filter(Boolean).join(" · ");
+    return `${leg}
+      <div class="sh-stop">
+        <div class="sh-stop-head">
+          <span class="sh-n">${i + 1}</span>
+          <span class="sh-time">${esc(s.plannedTime || "")}</span>
+          <h3>${esc(loc.title || "Untitled")}</h3>
+          <span class="sh-status">${STATUS[loc.status].label}</span>
+        </div>
+        <div class="sh-meta">📍 ${esc(loc.neighbourhood)}${loc.address ? ` — ${esc(loc.address)}` : ""}</div>
+        ${logistics ? `<div class="sh-meta">${esc(logistics)}</div>` : ""}
+        ${s.note ? `<div class="sh-note">▸ ${esc(s.note)}</div>` : ""}
+        ${(loc.contacts || []).map((c) => `<div class="sh-meta">👤 ${esc(c.name)}${c.role ? ` (${esc(c.role)})` : ""}${c.detail ? ` — ${esc(c.detail)}` : ""}</div>`).join("")}
+        ${loc.notes ? `<div class="sh-locnotes">${esc(loc.notes)}</div>` : ""}
+      </div>`;
+  }).join("");
+  const km = dayTotalKm(day);
+  body.innerHTML = `
+    <header class="sh-head">
+      <h1>${esc(day.title || "Untitled day")}</h1>
+      <div class="sh-sub">${day.date ? esc(fmtDayDateLong(day.date)) : "No date set"} · ${esc(activeProject().name)} · ${day.stops.length} stop${day.stops.length === 1 ? "" : "s"}${km ? ` · ~${km.toFixed(1)} km` : ""}</div>
+      ${day.notes ? `<div class="sh-daynotes">${esc(day.notes)}</div>` : ""}
+    </header>
+    ${stops || "<p>No stops in this day yet.</p>"}
+    <footer class="sh-foot">Scarborough Film Map · generated ${new Date().toLocaleDateString("en-CA")}</footer>`;
+  document.getElementById("daysheet").hidden = false;
+  document.body.classList.add("sheet-open");
+}
+function fmtDayDateLong(ymd) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  if (!y || !m || !d) return ymd;
+  return new Date(y, m - 1, d).toLocaleDateString("en-CA", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+}
+document.getElementById("sheet-close").onclick = () => {
+  document.getElementById("daysheet").hidden = true;
+  document.body.classList.remove("sheet-open");
+};
+document.getElementById("sheet-print").onclick = () => window.print();
+
+function exportDayText(day) {
+  const lines = [
+    `SHOOT DAY — ${day.title || "Untitled day"}`,
+    `${day.date ? fmtDayDateLong(day.date) : "No date"} · ${activeProject().name}`,
+  ];
+  if (day.notes) lines.push("", day.notes);
+  lines.push("");
+  day.stops.forEach((s, i) => {
+    const loc = locById(s.locationId);
+    if (!loc) { lines.push(`${i + 1}. (deleted location)`); return; }
+    lines.push(`${i + 1}. ${s.plannedTime ? `[${s.plannedTime}] ` : ""}${loc.title} — ${loc.neighbourhood} — ${STATUS[loc.status].label}`);
+    if (loc.address) lines.push(`   ${loc.address}`);
+    const log = [loc.bestTime && `best light: ${loc.bestTime}`, loc.permit !== "n/a" && `permit: ${loc.permit}`, loc.parking && `parking: ${loc.parking}`].filter(Boolean).join(" · ");
+    if (log) lines.push(`   ${log}`);
+    if (s.note) lines.push(`   ▸ ${s.note}`);
+    if (i < day.stops.length - 1) {
+      const next = locById(day.stops[i + 1].locationId);
+      if (next) lines.push(`   ↓ ${distKm(loc, next).toFixed(1)} km`);
+    }
+  });
+  download(lines.join("\n"), `shoot-day-${(day.date || day.title || "plan").replace(/\W+/g, "-").toLowerCase()}.txt`, "text/plain");
+}
+
+/* radius plan → saved day */
+async function saveRadiusPlanAsDay(anchor, near) {
+  const day = {
+    id: null, projectId: db.activeProjectId,
+    title: `${anchor.neighbourhood || "Scarborough"} day`, date: "", notes: "",
+    createdAt: Date.now(),
+    stops: [anchor, ...near.map((x) => x.l)].map((l) => ({ id: null, locationId: l.id, plannedTime: "", note: "" })),
+  };
+  if (!(await saveDayApi(day))) { alert(`Couldn't save the plan as a day.${lastApiError ? `\n\n${lastApiError}` : ""}`); return; }
+  db.shootDays.push(day);
+  if (planCircle) { map.removeLayer(planCircle); planCircle = null; }
+  plannerAnchor = null;
+  daysMode = "edit";
+  editingDayId = day.id;
+  renderDaysPanel();
+  render();
+}
 
 /* ---------- suggestion review queue ----------
    People suggest locations through the public /suggest page; those land in the
@@ -916,6 +1355,7 @@ function render() {
   renderProjects();
   const list = filtered();
   drawMarkers(list); renderStats(); renderList(list);
+  if (activeView === "console") renderConsole(list);
   const n = projectLocs().length;
   document.getElementById("count").textContent = (dbLoadFailed && !n) ? "—" : `${n} location${n === 1 ? "" : "s"}`;
 }
@@ -948,16 +1388,7 @@ function renderList(list) {
   }
   el.innerHTML = "";
   list.slice().sort((a, b) => b.createdAt - a.createdAt).forEach((loc) => {
-    const chips = [];
-    if (loc.shootDate) chips.push(`🗓 ${esc(loc.shootDate)}`);
-    if (loc.interviews?.length) chips.push(`🎤 ${loc.interviews.length}`);
-    if (loc.footage?.length) chips.push(`🎬 ${loc.footage.length}`);
-    if (loc.contacts?.length) chips.push(`👤 ${loc.contacts.length}`);
-    if (loc.photos?.filter(Boolean).length) chips.push(`📷 ${loc.photos.filter(Boolean).length}`);
-    if (loc.permit && loc.permit !== "n/a") chips.push(`📋 ${loc.permit}`);
-    // The whole point of the suggestions feature: at a glance, whose idea was this?
-    const by = contributorOf(loc);
-    if (by) chips.push(`💡 ${esc(shortName(by.name))}`);
+    const chips = locChips(loc);
     const card = document.createElement("div");
     card.className = `card s-${loc.status}`;
     card.tabIndex = 0;
@@ -974,6 +1405,23 @@ function renderList(list) {
   });
 }
 function hoodTooltip(name) { const n = projectLocs().filter((l) => l.neighbourhood === name).length; return `<b>${name}</b><br>${n} shoot location${n === 1 ? "" : "s"}`; }
+
+/* One chips builder for both the sidebar cards and the console cards, so the
+   two views can never drift on what a location "wears". Returns HTML strings
+   (already escaped). */
+function locChips(loc) {
+  const chips = [];
+  if (loc.shootDate) chips.push(`🗓 ${esc(loc.shootDate)}`);
+  if (loc.interviews?.length) chips.push(`🎤 ${loc.interviews.length}`);
+  if (loc.footage?.length) chips.push(`🎬 ${loc.footage.length}`);
+  if (loc.contacts?.length) chips.push(`👤 ${loc.contacts.length}`);
+  if (loc.photos?.filter(Boolean).length) chips.push(`📷 ${loc.photos.filter(Boolean).length}`);
+  if (loc.permit && loc.permit !== "n/a") chips.push(`📋 ${esc(loc.permit)}`);
+  // The whole point of the suggestions feature: at a glance, whose idea was this?
+  const by = contributorOf(loc);
+  if (by) chips.push(`💡 ${esc(shortName(by.name))}`);
+  return chips;
+}
 
 /* ---------- geocoding lookups (free OpenStreetMap services, no key) ----------
    Nominatim usage policy = low-volume only, which fits this single-user tool.
@@ -1113,7 +1561,17 @@ function setHoodField(name) {
 function markAt(latlng) {
   const d = blankLoc();
   d.lat = latlng.lat; d.lng = latlng.lng;
+  // Placing a captured idea: seed the new location from it, and remember the
+  // idea so a successful save can link + archive it (see saveDetail).
+  const idea = pendingIdeaId ? db.ideas.find((i) => i.id === pendingIdeaId) : null;
+  if (idea) {
+    d.title = idea.title || idea.body.split("\n")[0].slice(0, 80);
+    d.notes = [idea.body, idea.url].filter(Boolean).join("\n");
+    if (idea.kind === "image" && idea.url) d.photos = [idea.url];
+    d._fromIdeaId = idea.id;
+  }
   if (!openDetail(d, true)) return;          // user kept their unsaved edits — don't touch the open editor
+  if (idea) cancelIdeaPlacement();           // consumed — the editor holds it now
   showTempMarker(latlng.lat, latlng.lng);    // visible, draggable pin
   enrichEditing(latlng.lat, latlng.lng);     // fills title + address + nearby chips
 }
@@ -1189,11 +1647,9 @@ document.getElementById("rename-project").onclick = async () => {
   p.name = name.trim();
   renderProjects();
 };
-document.getElementById("plan-day").onclick = () => {
-  const locs = projectLocs();
-  if (!locs.length) { alert("Add a location first, then plan a day around it."); return; }
-  openPlanner(locs[locs.length - 1]);   // most recently added — and the picker lets you re-anchor
-};
+// The sidebar button opens the shoot-days manager; the radius generator is one
+// tap inside it (and still directly reachable from a location's "Plan day").
+document.getElementById("plan-day").onclick = () => openDays();
 document.getElementById("use-location").onclick = () => {
   if (!navigator.geolocation) { alert("Geolocation not supported on this device."); return; }
   navigator.geolocation.getCurrentPosition(
@@ -1261,7 +1717,11 @@ document.addEventListener("keydown", (e) => {
   const detail = document.getElementById("detail"), planner = document.getElementById("planner");
   const suggestions = document.getElementById("suggestions");
   const panel = !detail.hidden ? detail : (!planner.hidden ? planner : (!suggestions.hidden ? suggestions : null));
-  if (!panel) return;
+  if (!panel) {
+    // no panel open: Esc abandons a pending idea placement
+    if (e.key === "Escape" && pendingIdeaId) { e.preventDefault(); cancelIdeaPlacement(); }
+    return;
+  }
   if (e.key === "Escape") {
     e.preventDefault();
     if (panel === detail) closeDetail();
@@ -1309,6 +1769,585 @@ placeQ.addEventListener("input", () => {
 document.addEventListener("click", (e) => {
   if (!document.getElementById("place-search").contains(e.target)) placeResults.hidden = true;
 });
+
+/* ══════════════════════════════════════════════════════════════
+   FILMMAKER CONSOLE — a board view over the same records as the map.
+   Lanes group by status / type / neighbourhood / shoot day; the sidebar's
+   search + filters apply here exactly as they do to the list. UX patterns
+   borrowed from the Tripdeck project (travel_planner): lane sections with
+   count badges, accent-striped cards, pointer-events drag with a ghost
+   clone, chips over dropdowns.
+
+   Dragging is the editing gesture and its meaning follows the grouping:
+     status lanes → change status        type lanes → change category
+     day lanes    → add/move/reorder that day's stops
+     hood lanes   → not droppable (the neighbourhood is derived from the
+                    pin's coordinates; dragging a card can't move a pin)
+   Ideas live in their own lane in every grouping — capture first, file later.
+══════════════════════════════════════════════════════════════ */
+
+const CONSOLE_GROUPS = [
+  ["status", "Status"], ["type", "Type"], ["hood", "Neighbourhood"], ["days", "Shoot days"],
+];
+
+function setView(view) {
+  if (view === activeView) return;
+  if (view !== "map" && pendingIdeaId) cancelIdeaPlacement();
+  activeView = view;
+  document.getElementById("view-map").classList.toggle("active", view === "map");
+  document.getElementById("view-map").setAttribute("aria-pressed", String(view === "map"));
+  document.getElementById("view-console").classList.toggle("active", view === "console");
+  document.getElementById("view-console").setAttribute("aria-pressed", String(view === "console"));
+  document.body.classList.toggle("view-console", view === "console");
+  document.getElementById("map").style.display = view === "console" ? "none" : "";
+  document.getElementById("console").hidden = view !== "console";
+  const tag = document.querySelector(".tagline");
+  if (tag && !exploreMode) {
+    tag.textContent = view === "console"
+      ? "Drag cards between lanes to file them."
+      : "Click the map to add a location.";
+  }
+  if (view === "map") setTimeout(() => map.invalidateSize(), 60);
+  render();
+}
+document.getElementById("view-map").onclick = () => setView("map");
+document.getElementById("view-console").onclick = () => setView("console");
+
+function setConsoleGroup(g) {
+  consoleGroup = g;
+  localStorage.setItem("sfm_console_group", g);
+  render();
+}
+
+/* ---------- console: idea helpers ---------- */
+function ideaSearchHay(i) { return `${i.title} ${i.body} ${i.url}`.toLowerCase(); }
+function visibleIdeas() {
+  const { q } = currentFilter();
+  return projectIdeas()
+    .filter((i) => (showArchivedIdeas ? true : i.status === "inbox"))
+    .filter((i) => !q || ideaSearchHay(i).includes(q))
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+function ideaKindMeta(i) {
+  if (i.kind === "link") return { icon: "🔗", label: "Link" };
+  if (i.kind === "image") return { icon: "🖼", label: "Image" };
+  return { icon: "📝", label: "Note" };
+}
+function urlHost(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } }
+
+/* ---------- console: lane model ---------- */
+function consoleLanes(list) {
+  const lanes = [];
+  if (consoleGroup === "status") {
+    Object.entries(STATUS).forEach(([key, s]) => lanes.push({
+      key, title: s.label, accent: s.color, cards: list.filter((l) => l.status === key),
+      droppable: true, drop: { kind: "status", value: key },
+    }));
+  } else if (consoleGroup === "type") {
+    CATEGORIES.forEach((c) => lanes.push({
+      key: c, title: c, accent: "#4ea1ff", cards: list.filter((l) => (l.category || "Other") === c),
+      droppable: true, drop: { kind: "category", value: c },
+    }));
+  } else if (consoleGroup === "hood") {
+    const byHood = {};
+    list.forEach((l) => { const h = l.neighbourhood || "Unplaced"; (byHood[h] = byHood[h] || []).push(l); });
+    Object.keys(byHood).sort().forEach((h) => lanes.push({
+      key: h, title: h, accent: "#8a97a6", cards: byHood[h], droppable: false,
+    }));
+  } else if (consoleGroup === "days") {
+    const days = projectDays();
+    const scheduled = new Set();
+    days.forEach((d) => d.stops.forEach((s) => scheduled.add(s.locationId)));
+    lanes.push({
+      key: "unscheduled", title: "Unscheduled", accent: "#8a97a6",
+      cards: list.filter((l) => !scheduled.has(l.id)),
+      droppable: true, drop: { kind: "unschedule" },
+    });
+    days.forEach((d) => lanes.push({
+      key: d.id,
+      title: d.title || "Untitled day",
+      sub: d.date ? fmtDayDate(d.date) : "no date",
+      accent: "#f0a93b",
+      cards: d.stops.map((s) => list.find((l) => l.id === s.locationId)).filter(Boolean),
+      droppable: true, ordered: true, drop: { kind: "day", dayId: d.id },
+      dayId: d.id,
+    }));
+  }
+  return lanes;
+}
+
+/* 'YYYY-MM-DD' → 'Fri, Aug 14' without ever constructing a Date from a bare
+   string in a way Safari could misread: split the parts ourselves. */
+function fmtDayDate(ymd) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  if (!y || !m || !d) return ymd;
+  const dt = new Date(y, m - 1, d);
+  return dt.toLocaleDateString("en-CA", { weekday: "short", month: "short", day: "numeric" });
+}
+
+/* ---------- console: render ---------- */
+function renderConsole(list) {
+  const el = document.getElementById("console");
+  const lanes = consoleLanes(list);
+  const ideas = visibleIdeas();
+  const archivedCount = projectIdeas().filter((i) => i.status === "archived").length;
+
+  const groupTabs = CONSOLE_GROUPS.map(([g, label]) =>
+    `<button class="cg-tab ${g === consoleGroup ? "on" : ""}" data-act="set-group" data-group="${g}" aria-pressed="${g === consoleGroup}">${label}</button>`).join("");
+
+  const ideaLane = `
+    <div class="lane lane--ideas" data-lane="ideas">
+      <div class="lane-head">
+        <span class="lane-dot" style="background:#f0a93b"></span>
+        <span class="lane-title">💡 Ideas</span>
+        <span class="lane-count">${ideas.length}</span>
+      </div>
+      <form class="capture" data-act-form="capture">
+        <input id="capture-input" type="text" placeholder="Drop a link, a note, a half-idea…"
+               aria-label="Capture an idea" autocomplete="off" />
+        <div class="capture-row">
+          <button type="button" class="btn ghost capture-img" data-act="capture-image" title="Add an image idea">🖼</button>
+          <button type="submit" class="btn primary capture-add">＋ Add</button>
+        </div>
+      </form>
+      <div class="lane-body">
+        ${ideas.map(ideaCardHtml).join("") || `<div class="lane-empty">Links, notes and images land here.<br>Place the good ones on the map.</div>`}
+      </div>
+      ${archivedCount ? `<button class="lane-foot" data-act="toggle-archived">${showArchivedIdeas ? "Hide" : "Show"} ${archivedCount} archived</button>` : ""}
+    </div>`;
+
+  const laneHtml = lanes.map((lane) => {
+    const cards = lane.cards.map((l) => locCardHtml(l, lane)).join("");
+    const canDrag = lane.droppable || consoleGroup === "days";
+    return `
+      <div class="lane ${lane.droppable ? "lane--droppable" : ""}" data-lane="${esc(lane.key)}">
+        <div class="lane-head">
+          <span class="lane-dot" style="background:${lane.accent}"></span>
+          <span class="lane-title">${esc(lane.title)}</span>
+          ${lane.sub ? `<span class="lane-sub">${esc(lane.sub)}</span>` : ""}
+          <span class="lane-count">${lane.cards.length}</span>
+          ${lane.dayId ? `<button class="lane-open" data-act="open-day" data-day="${esc(lane.dayId)}" title="Open this day in the planner">✎</button>` : ""}
+        </div>
+        <div class="lane-body ${canDrag ? "" : "lane-body--static"}">
+          ${cards || `<div class="lane-empty">${lane.droppable ? "Drag cards here" : "—"}</div>`}
+        </div>
+      </div>`;
+  }).join("");
+
+  el.innerHTML = `
+    <div class="console-top">
+      <button class="btn ghost cg-back mobile-only" data-act="to-map" aria-label="Back to the map">🗺 Map</button>
+      <span class="cg-label">Group by</span>
+      <div class="cg-tabs" role="group" aria-label="Group cards by">${groupTabs}</div>
+      ${consoleGroup === "days" ? `<button class="btn ghost cg-newday" data-act="new-day">＋ New shoot day</button>` : ""}
+    </div>
+    <div class="lanes">${ideaLane}${laneHtml}</div>`;
+}
+
+function locCardHtml(loc, lane) {
+  const chips = locChips(loc);
+  const draggable = lane.droppable || consoleGroup === "days" || consoleGroup === "status" || consoleGroup === "type";
+  return `
+    <article class="ccard s-${esc(loc.status)}" data-id="${esc(loc.id)}" data-kind="loc"
+      ${draggable ? `data-drag="1"` : ""} data-src-lane="${esc(lane.key)}"
+      tabindex="0" role="button" aria-label="Open ${esc(loc.title || "Untitled")}">
+      <div class="ccard-t">${esc(loc.title || "Untitled")}<span class="badge ${esc(loc.status)}">${STATUS[loc.status].label}</span></div>
+      <div class="ccard-m">📍 ${esc(loc.neighbourhood || "—")} · ${esc(loc.category || "")}</div>
+      ${chips.length ? `<div class="chips">${chips.map((c) => `<span class="chip">${c}</span>`).join("")}</div>` : ""}
+    </article>`;
+}
+
+function ideaCardHtml(idea) {
+  const meta = ideaKindMeta(idea);
+  const linked = idea.locationId ? locById(idea.locationId) : null;
+  if (editingIdeaId === idea.id) {
+    return `
+      <article class="ccard ccard--idea ccard--editing" data-id="${esc(idea.id)}" data-kind="idea">
+        <input class="ie-title" value="${esc(idea.title)}" placeholder="Title" aria-label="Idea title" />
+        <textarea class="ie-body" rows="3" placeholder="Note…" aria-label="Idea text">${esc(idea.body)}</textarea>
+        ${idea.kind !== "note" ? `<input class="ie-url" value="${esc(idea.url)}" placeholder="https://…" aria-label="URL" />` : ""}
+        <div class="ccard-actions">
+          <button class="btn ghost" data-act="idea-edit-cancel">Cancel</button>
+          <button class="btn primary" data-act="idea-edit-save">Save</button>
+        </div>
+      </article>`;
+  }
+  const title = idea.title || (idea.kind === "note" ? (idea.body.split("\n")[0].slice(0, 80) || "Untitled note") : idea.url);
+  const bodyPreview = idea.kind === "note"
+    ? (idea.title ? idea.body : idea.body.split("\n").slice(1).join(" ")).slice(0, 200)
+    : idea.body.slice(0, 200);
+  return `
+    <article class="ccard ccard--idea ${idea.status === "archived" ? "ccard--archived" : ""}" data-id="${esc(idea.id)}" data-kind="idea" tabindex="0">
+      <div class="ccard-t">
+        <span class="ie-icon" title="${meta.label}">${meta.icon}</span>
+        ${idea.kind === "link" && idea.url
+          ? `<a href="${esc(idea.url)}" target="_blank" rel="noopener" class="ie-link">${esc(title)}</a>`
+          : esc(title)}
+      </div>
+      ${idea.kind === "image" && idea.url ? `<img class="ie-img" src="${esc(idea.url)}" alt="" loading="lazy" onerror="this.style.display='none'">` : ""}
+      ${bodyPreview ? `<div class="ccard-m ie-body-preview">${esc(bodyPreview)}</div>` : ""}
+      <div class="ccard-m">
+        ${idea.kind === "link" && idea.url ? `<span class="chip">${esc(urlHost(idea.url))}</span>` : ""}
+        ${linked ? `<span class="chip ok">📍 ${esc(linked.title)}</span>` : ""}
+      </div>
+      <div class="ccard-actions">
+        ${!linked ? `<button class="btn ghost" data-act="idea-place" title="Click the map to turn this into a location">📍 Place</button>
+        <button class="btn ghost" data-act="idea-attach" title="Attach to an existing location">🔗</button>` :
+        `<button class="btn ghost" data-act="idea-goto" title="Open the linked location">↦ Open</button>`}
+        <button class="btn ghost" data-act="idea-edit" title="Edit">✎</button>
+        <button class="btn ghost" data-act="idea-archive" title="${idea.status === "archived" ? "Restore to inbox" : "Archive"}">${idea.status === "archived" ? "↩" : "✓"}</button>
+        <button class="btn ghost ie-del" data-act="idea-delete" title="Delete">✕</button>
+      </div>
+      <div class="ie-attach" hidden></div>
+    </article>`;
+}
+
+/* ---------- console: delegated events ---------- */
+document.getElementById("console").addEventListener("click", async (e) => {
+  const actEl = e.target.closest("[data-act]");
+  if (actEl) { await consoleAction(actEl, e); return; }
+  if (consoleDragJustEnded) return;
+  const card = e.target.closest(".ccard[data-kind='loc']");
+  if (card && !e.target.closest("a,button,input,textarea,select")) {
+    const loc = locById(card.dataset.id);
+    if (loc) openDetail(loc, false);
+  }
+});
+document.getElementById("console").addEventListener("submit", async (e) => {
+  const form = e.target.closest("[data-act-form='capture']");
+  if (!form) return;
+  e.preventDefault();
+  await captureIdea();
+});
+// Enter/Space opens a focused location card (keyboard parity with the sidebar list)
+document.getElementById("console").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const card = e.target.closest && e.target.closest(".ccard[data-kind='loc']");
+  if (!card || e.target !== card) return;
+  e.preventDefault();
+  const loc = locById(card.dataset.id);
+  if (loc) openDetail(loc, false);
+});
+
+async function consoleAction(el, e) {
+  const act = el.dataset.act;
+  const card = el.closest(".ccard");
+  const idea = card && card.dataset.kind === "idea" ? db.ideas.find((i) => i.id === card.dataset.id) : null;
+
+  if (act === "set-group") { setConsoleGroup(el.dataset.group); return; }
+  if (act === "to-map") { setView("map"); return; }
+  if (act === "toggle-archived") { showArchivedIdeas = !showArchivedIdeas; render(); return; }
+  if (act === "new-day") { openDays(); startNewDay(); return; }
+  if (act === "open-day") { openDays(el.dataset.day); return; }
+  if (act === "capture-image") { pickIdeaImage(); return; }
+
+  if (!idea) return;
+  if (act === "idea-place") {
+    pendingIdeaId = idea.id;
+    setView("map");
+    const tag = document.querySelector(".tagline");
+    if (tag) tag.textContent = "📍 Click the map where this idea belongs (Esc to cancel).";
+    const pill = document.getElementById("mode-pill");
+    pill.textContent = `📍 Placing: ${idea.title || idea.body.slice(0, 40) || "idea"} — click the map (Esc cancels)`;
+    pill.hidden = false;
+    return;
+  }
+  if (act === "idea-goto") {
+    const loc = locById(idea.locationId);
+    if (loc) { setView("map"); map.flyTo([loc.lat, loc.lng], 16, { duration: 0.6 }); openDetail(loc, false); }
+    return;
+  }
+  if (act === "idea-attach") {
+    const holder = card.querySelector(".ie-attach");
+    if (!holder.hidden) { holder.hidden = true; holder.innerHTML = ""; return; }
+    const opts = projectLocs().slice().sort((a, b) => (a.title || "").localeCompare(b.title || ""))
+      .map((l) => `<option value="${esc(l.id)}">${esc(l.title || "Untitled")}</option>`).join("");
+    holder.innerHTML = `<label class="ie-attach-label">Attach to</label>
+      <div class="ie-attach-row"><select class="ie-attach-sel"><option value="">Choose a location…</option>${opts}</select>
+      <button class="btn primary" data-act="idea-attach-go">OK</button></div>`;
+    holder.hidden = false;
+    return;
+  }
+  if (act === "idea-attach-go") {
+    const sel = card.querySelector(".ie-attach-sel");
+    if (!sel || !sel.value) return;
+    const prev = { locationId: idea.locationId, status: idea.status };
+    idea.locationId = sel.value; idea.status = "archived";
+    render();
+    if (!(await saveIdeaApi(idea))) {
+      idea.locationId = prev.locationId; idea.status = prev.status;
+      render();
+      alert(`Couldn't attach that idea.${lastApiError ? `\n\n${lastApiError}` : ""}`);
+    }
+    return;
+  }
+  if (act === "idea-edit") { editingIdeaId = idea.id; render(); setTimeout(() => { const t = document.querySelector(".ccard--editing .ie-title"); if (t) t.focus(); }, 0); return; }
+  if (act === "idea-edit-cancel") { editingIdeaId = null; render(); return; }
+  if (act === "idea-edit-save") {
+    const t = card.querySelector(".ie-title"), b = card.querySelector(".ie-body"), u = card.querySelector(".ie-url");
+    const prev = { title: idea.title, body: idea.body, url: idea.url };
+    idea.title = (t ? t.value : idea.title).trim();
+    idea.body = (b ? b.value : idea.body).trim();
+    if (u) idea.url = u.value.trim();
+    editingIdeaId = null;
+    render();
+    if (!(await saveIdeaApi(idea))) {
+      Object.assign(idea, prev); render();
+      alert(`Couldn't save that idea.${lastApiError ? `\n\n${lastApiError}` : ""}`);
+    }
+    return;
+  }
+  if (act === "idea-archive") {
+    const prev = idea.status;
+    idea.status = idea.status === "archived" ? "inbox" : "archived";
+    render();
+    if (!(await saveIdeaApi(idea))) { idea.status = prev; render(); alert(`Couldn't update that idea.${lastApiError ? `\n\n${lastApiError}` : ""}`); }
+    return;
+  }
+  if (act === "idea-delete") {
+    if (!confirm(`Delete this idea? This can't be undone.`)) return;
+    const i = db.ideas.indexOf(idea);
+    db.ideas.splice(i, 1);
+    render();
+    if (!(await deleteIdeaApi(idea.id))) {
+      db.ideas.splice(i, 0, idea); render();
+      alert(`Couldn't delete.${lastApiError ? `\n\n${lastApiError}` : ""}`);
+    }
+    return;
+  }
+}
+
+/* ---------- console: idea capture ---------- */
+function parseCapture(text) {
+  const t = text.trim();
+  if (!t) return null;
+  const urlMatch = t.match(/^(https?:\/\/\S+)(?:\s+(.*))?$/i);
+  if (urlMatch) {
+    const url = urlMatch[1];
+    const isImage = /\.(jpe?g|png|webp|gif|avif)(\?|$)/i.test(url);
+    return { kind: isImage ? "image" : "link", url, body: (urlMatch[2] || "").trim(), title: "" };
+  }
+  return { kind: "note", body: t, url: "", title: "" };
+}
+async function captureIdea() {
+  const input = document.getElementById("capture-input");
+  const parsed = parseCapture(input.value);
+  if (!parsed) return;
+  const btn = document.querySelector(".capture-add");
+  if (btn && btn.disabled) return;
+  if (btn) { btn.disabled = true; btn.textContent = "Adding…"; }
+  const idea = { id: null, projectId: db.activeProjectId, locationId: null, status: "inbox", createdAt: Date.now(), ...parsed };
+  const ok = await saveIdeaApi(idea);
+  if (btn) { btn.disabled = false; btn.textContent = "＋ Add"; }
+  if (!ok) { alert(`Couldn't save that idea — it's still in the box.${lastApiError ? `\n\n${lastApiError}` : ""}`); return; }
+  db.ideas.unshift(idea);
+  render();
+  const again = document.getElementById("capture-input");
+  if (again) { again.value = ""; again.focus(); }   // rapid multi-add, Tripdeck-style
+}
+function pickIdeaImage() {
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "image/*";
+  inp.onchange = async () => {
+    const file = inp.files && inp.files[0];
+    if (!file) return;
+    const btn = document.querySelector(".capture-img");
+    if (btn) { btn.disabled = true; btn.textContent = "…"; }
+    try {
+      const url = await uploadPhoto(file);
+      const idea = { id: null, projectId: db.activeProjectId, kind: "image", title: file.name.replace(/\.[^.]+$/, ""), body: "", url, locationId: null, status: "inbox", createdAt: Date.now() };
+      if (!(await saveIdeaApi(idea))) throw new Error(lastApiError || "save failed");
+      db.ideas.unshift(idea);
+      render();
+    } catch (err) {
+      console.error("image idea:", err);
+      alert(`Couldn't add that image.\n\n${err && err.message ? err.message : ""}\n\nTip: you can also paste an image URL into the capture box.`);
+    }
+    const b = document.querySelector(".capture-img");
+    if (b) { b.disabled = false; b.textContent = "🖼"; }
+  };
+  inp.click();
+}
+function cancelIdeaPlacement() {
+  pendingIdeaId = null;
+  const pill = document.getElementById("mode-pill");
+  if (pill) { pill.hidden = !exploreMode; pill.textContent = "🔍 Explore mode — click the map for info"; }
+  const tag = document.querySelector(".tagline");
+  if (tag && !exploreMode) tag.textContent = activeView === "console" ? "Drag cards between lanes to file them." : "Click the map to add a location.";
+}
+
+/* ---------- console: drag (adapted from Tripdeck's drag.js core) ----------
+   Pointer events, not HTML5 DnD — HTML5 can't do touch or custom ghosts.
+   Mouse: 8px of travel arms the drag. Touch: 250ms hold arms it; >10px of
+   travel before that means the finger is scrolling, so we let it scroll. */
+let cdrag = null, consoleDragJustEnded = false;
+const CDRAG_MOUSE_PX = 8, CDRAG_HOLD_MS = 250, CDRAG_SLOP_PX = 10;
+
+document.getElementById("console").addEventListener("pointerdown", (e) => {
+  if (cdrag || e.button > 0) return;
+  const card = e.target.closest(".ccard[data-drag]");
+  if (!card) return;
+  if (e.target.closest("button, a, input, select, textarea")) return;
+  cdrag = {
+    pointerId: e.pointerId,
+    touch: e.pointerType !== "mouse",
+    card, cardId: card.dataset.id, srcLane: card.dataset.srcLane,
+    start: { x: e.clientX, y: e.clientY }, at: { x: e.clientX, y: e.clientY },
+    lifted: false, holdTimer: null, ghost: null, zone: null, indicator: null,
+  };
+  try { card.setPointerCapture(e.pointerId); } catch (err) { /* best effort */ }
+  if (cdrag.touch) {
+    card.classList.add("ccard--arming");
+    cdrag.holdTimer = setTimeout(() => { if (cdrag && !cdrag.lifted) cdragLift(); }, CDRAG_HOLD_MS);
+  }
+});
+document.addEventListener("pointermove", (e) => {
+  if (!cdrag || e.pointerId !== cdrag.pointerId) return;
+  cdrag.at = { x: e.clientX, y: e.clientY };
+  if (!cdrag.lifted) {
+    const dx = cdrag.at.x - cdrag.start.x, dy = cdrag.at.y - cdrag.start.y;
+    const travelled = Math.hypot(dx, dy);
+    if (cdrag.touch) { if (travelled > CDRAG_SLOP_PX) cdragCleanup(); return; }
+    if (travelled < CDRAG_MOUSE_PX) return;
+    cdragLift();
+    // fall through: the arming move must also target, or a fast flick drops nowhere
+  }
+  e.preventDefault();
+  if (cdrag.ghost) cdrag.ghost.style.transform = `translate3d(${cdrag.at.x - cdrag.grab.x}px, ${cdrag.at.y - cdrag.grab.y}px, 0) rotate(-1.5deg)`;
+  cdragTarget();
+}, { passive: false });
+document.addEventListener("pointerup", (e) => {
+  if (!cdrag || e.pointerId !== cdrag.pointerId) return;
+  if (cdrag.lifted) cdragDrop();
+  else cdragCleanup();
+});
+document.addEventListener("pointercancel", (e) => {
+  if (cdrag && e.pointerId === cdrag.pointerId) cdragCleanup();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && cdrag && cdrag.lifted) { e.preventDefault(); cdragCleanup(); }
+});
+
+function cdragLift() {
+  if (!cdrag || cdrag.lifted) return;
+  clearTimeout(cdrag.holdTimer);
+  cdrag.lifted = true;
+  if (navigator.vibrate) { try { navigator.vibrate(10); } catch (err) { /* unsupported */ } }
+  const r = cdrag.card.getBoundingClientRect();
+  cdrag.grab = { x: cdrag.at.x - r.left, y: cdrag.at.y - r.top };
+  const ghost = cdrag.card.cloneNode(true);
+  ghost.classList.add("ccard-ghost");
+  ghost.classList.remove("ccard--arming");
+  ghost.style.width = `${r.width}px`;
+  document.body.appendChild(ghost);
+  cdrag.ghost = ghost;
+  ghost.style.transform = `translate3d(${cdrag.at.x - cdrag.grab.x}px, ${cdrag.at.y - cdrag.grab.y}px, 0) rotate(-1.5deg)`;
+  cdrag.card.classList.remove("ccard--arming");
+  cdrag.card.classList.add("ccard--dragging");
+  document.body.classList.add("cdragging");
+  // every legal target lights for the whole drag — no hover hunting
+  document.querySelectorAll(".lane--droppable").forEach((l) => {
+    if (l.dataset.lane !== cdrag.srcLane || consoleGroup === "days") l.classList.add("lane--ok");
+  });
+}
+function cdragTarget() {
+  const els = document.elementsFromPoint(cdrag.at.x, cdrag.at.y) || [];
+  let zone = null;
+  for (const el of els) { if (el.closest) { zone = el.closest(".lane--ok"); if (zone) break; } }
+  if (zone !== cdrag.zone) {
+    if (cdrag.zone) cdrag.zone.classList.remove("lane--hot");
+    cdrag.zone = zone;
+    if (zone) zone.classList.add("lane--hot");
+  }
+  if (cdrag.ghost) cdrag.ghost.classList.toggle("ccard-ghost--invalid", !zone);
+  // insertion indicator, only where order matters (a shoot day's stops)
+  if (cdrag.indicator) { cdrag.indicator.remove(); cdrag.indicator = null; }
+  if (zone && consoleGroup === "days" && zone.dataset.lane !== "unscheduled") {
+    const body = zone.querySelector(".lane-body");
+    const sibs = Array.from(body.querySelectorAll(".ccard")).filter((c) => c !== cdrag.card);
+    let before = null;
+    for (const c of sibs) { const r = c.getBoundingClientRect(); if (cdrag.at.y < r.top + r.height / 2) { before = c; break; } }
+    cdrag.indicator = document.createElement("div");
+    cdrag.indicator.className = "drop-indicator";
+    if (before) body.insertBefore(cdrag.indicator, before);
+    else body.appendChild(cdrag.indicator);
+    cdrag.beforeId = before ? before.dataset.id : null;
+  }
+}
+async function cdragDrop() {
+  const zone = cdrag.zone, cardId = cdrag.cardId, srcLane = cdrag.srcLane, beforeId = cdrag.beforeId;
+  cdragCleanup();
+  if (!zone) return;
+  consoleDragJustEnded = true;
+  setTimeout(() => { consoleDragJustEnded = false; }, 0);
+  const laneKey = zone.dataset.lane;
+  const loc = locById(cardId);
+  if (!loc) return;
+
+  if (consoleGroup === "status" && STATUS[laneKey]) {
+    if (loc.status === laneKey) return;
+    const prev = loc.status;
+    loc.status = laneKey;
+    render();
+    if (!(await saveLocation(loc))) { loc.status = prev; render(); alert(`Couldn't change status.${lastApiError ? `\n\n${lastApiError}` : ""}`); }
+    return;
+  }
+  if (consoleGroup === "type" && CATEGORIES.includes(laneKey)) {
+    if ((loc.category || "Other") === laneKey) return;
+    const prev = loc.category;
+    loc.category = laneKey;
+    render();
+    if (!(await saveLocation(loc))) { loc.category = prev; render(); alert(`Couldn't change type.${lastApiError ? `\n\n${lastApiError}` : ""}`); }
+    return;
+  }
+  if (consoleGroup === "days") {
+    const days = projectDays();
+    const srcDay = days.find((d) => d.id === srcLane);
+    const dstDay = laneKey === "unscheduled" ? null : days.find((d) => d.id === laneKey);
+    if (!srcDay && !dstDay) return;
+    const toSave = [];
+    if (srcDay && (!dstDay || dstDay.id !== srcDay.id)) {
+      srcDay.stops = srcDay.stops.filter((s) => s.locationId !== cardId);
+      toSave.push(srcDay);
+    }
+    if (dstDay) {
+      const existing = dstDay.stops.find((s) => s.locationId === cardId);
+      const stop = existing || { id: null, locationId: cardId, plannedTime: "", note: "" };
+      dstDay.stops = dstDay.stops.filter((s) => s.locationId !== cardId);
+      const at = beforeId ? dstDay.stops.findIndex((s) => s.locationId === beforeId) : -1;
+      if (at >= 0) dstDay.stops.splice(at, 0, stop);
+      else dstDay.stops.push(stop);
+      if (!toSave.includes(dstDay)) toSave.push(dstDay);
+    }
+    render();
+    for (const d of toSave) {
+      if (!(await saveDayApi(d))) {
+        alert(`Couldn't update the shoot day.${lastApiError ? `\n\n${lastApiError}` : ""}`);
+        const fresh = await loadDB();
+        if (fresh) { db = fresh; }
+        render();
+        return;
+      }
+    }
+    return;
+  }
+}
+function cdragCleanup() {
+  if (!cdrag) return;
+  clearTimeout(cdrag.holdTimer);
+  if (cdrag.ghost) cdrag.ghost.remove();
+  if (cdrag.indicator) cdrag.indicator.remove();
+  if (cdrag.card) {
+    cdrag.card.classList.remove("ccard--arming", "ccard--dragging");
+    try { cdrag.card.releasePointerCapture(cdrag.pointerId); } catch (e) { /* gone */ }
+  }
+  if (cdrag.zone) cdrag.zone.classList.remove("lane--hot");
+  document.querySelectorAll(".lane--ok").forEach((l) => l.classList.remove("lane--ok", "lane--hot"));
+  document.body.classList.remove("cdragging");
+  const wasLifted = cdrag.lifted;
+  cdrag = null;
+  if (wasLifted) { consoleDragJustEnded = true; setTimeout(() => { consoleDragJustEnded = false; }, 0); }
+}
 
 /* ---------- PWA: offline field use (see sw.js for the caching strategies) ---------- */
 if ("serviceWorker" in navigator) {

@@ -20,9 +20,15 @@
    delete-then-reinsert of child rows safe.
 
    Routes
-     GET    /api/db                 full snapshot (projects + locations + children)
+     GET    /api/db                 full snapshot (projects + locations + children
+                                    + ideas + shoot days + stops + contributors)
      POST   /api/locations          create or update one location (+ its children)
      DELETE /api/locations/<id>     delete (children cascade)
+     POST   /api/ideas              create or update one idea (link/note/image);
+                                    fetches the <title> of a bare pasted link
+     DELETE /api/ideas/<id>         delete
+     POST   /api/days               create or update one shoot day + its ordered stops
+     DELETE /api/days/<id>          delete (stops cascade)
      POST   /api/projects           { name } → new project
      PATCH  /api/projects/<id>      { name } → rename
      POST   /api/photo?project=<id> raw image body → { url: "/api/photo/<key>" }
@@ -109,7 +115,7 @@ async function getSnapshot(cs) {
     return { projects, locations: [], interviews: [], contacts: [], media: [] };
   }
 
-  const [locations, interviews, contacts, media, contributors] = await tx(cs, [
+  const [locations, interviews, contacts, media, contributors, ideas, shootDays, shootDayStops] = await tx(cs, [
     { query: `select ${LOCATION_COLS} from locations_view order by created_at`, params: [] },
     { query: 'select id, location_id, subject, role, status from interviews order by position, id', params: [] },
     { query: 'select id, location_id, name, role, detail from contacts order by position, id', params: [] },
@@ -119,9 +125,138 @@ async function getSnapshot(cs) {
     // put them in"). Small table, one extra statement in a batch already
     // being sent.
     { query: 'select id, name, email, credit_name, credit_consent from contributors', params: [] },
+    { query: `select id, project_id, kind, title, body, url, location_id, status,
+                     ${ISO('created_at')} as created_at
+                from ideas order by created_at desc`, params: [] },
+    // date is a DATE column: Neon's HTTP layer hands it over as plain
+    // 'YYYY-MM-DD' (verified), which every browser parses fine as a string —
+    // only timestamptz needs the ISO() treatment.
+    { query: `select id, project_id, title, date, notes, ${ISO('created_at')} as created_at
+                from shoot_days order by date nulls last, created_at`, params: [] },
+    { query: 'select id, day_id, location_id, position, planned_time, note from shoot_day_stops order by day_id, position, id', params: [] },
   ]);
 
-  return { projects, locations, interviews, contacts, media, contributors };
+  return { projects, locations, interviews, contacts, media, contributors, ideas, shootDays, shootDayStops };
+}
+
+/* ---------- POST /api/ideas ---------- */
+
+/* Best-effort <title> fetch for a pasted link, so the card can say
+   "Dragon Centre demolition coverage — blogTO" instead of a bare URL.
+   Owner-only route; hard 4 s timeout; reads at most 64 KB of the body.
+   Every failure path returns null — a title is a nicety, never a blocker. */
+async function fetchLinkTitle(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 4000);
+    let res;
+    try {
+      res = await fetch(u.toString(), {
+        signal: ctrl.signal,
+        redirect: 'follow',
+        headers: { 'Accept': 'text/html', 'User-Agent': 'ScarboroughFilmMap/1.0 (link titles)' },
+      });
+    } finally { clearTimeout(t); }
+    if (!res.ok || !(res.headers.get('content-type') || '').includes('text/html')) return null;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let html = '';
+    while (html.length < 65536) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      html += decoder.decode(value, { stream: true });
+      if (/<\/title>/i.test(html)) break;
+    }
+    try { await reader.cancel(); } catch (e) { /* stream already done */ }
+    const m = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+    if (!m) return null;
+    const title = m[1]
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&#x27;/gi, "'")
+      .replace(/\s+/g, ' ').trim();
+    return title.slice(0, 300) || null;
+  } catch (e) { return null; }
+}
+
+async function saveIdea(cs, idea) {
+  if (!idea || typeof idea !== 'object') return fail('idea payload required', 400);
+  const kind = ['note', 'link', 'image'].includes(idea.kind) ? idea.kind : 'note';
+  const status = idea.status === 'archived' ? 'archived' : 'inbox';
+  let title = clean(idea.title, 300);
+  const body = typeof idea.body === 'string' ? idea.body.trim().slice(0, 4000) || null : null;
+  const url = clean(idea.url, 2000);
+  if (kind !== 'note' && !url) return fail(`a ${kind} idea needs a url`, 400);
+  if (kind === 'note' && !body && !title) return fail('a note needs some text', 400);
+
+  // A pasted link with no title yet: go get one. Only on create-shaped saves
+  // (no title), so editing a card never overwrites what Prem typed.
+  if (kind === 'link' && !title && url) title = await fetchLinkTitle(url);
+
+  const isNew = !idea.id;
+  const ideaId = idea.id || crypto.randomUUID();
+  const params = [nz(idea.projectId), kind, title, body, url, nz(idea.locationId), status, ideaId];
+  const rows = isNew
+    ? await one(cs,
+      `insert into ideas (project_id, kind, title, body, url, location_id, status, id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)
+       returning id, title, ${ISO('created_at')} as created_at`, params)
+    : await one(cs,
+      `update ideas set project_id = $1, kind = $2, title = $3, body = $4, url = $5,
+              location_id = $6, status = $7
+        where id = $8
+        returning id, title, ${ISO('created_at')} as created_at`, params);
+  if (!rows.length) return fail('idea not found', 404);
+  return json({ id: rows[0].id, title: rows[0].title, createdAt: rows[0].created_at });
+}
+
+/* ---------- POST /api/days ---------- */
+
+async function saveDay(cs, day) {
+  if (!day || typeof day !== 'object') return fail('day payload required', 400);
+  const title = clean(day.title, 200) || 'Untitled day';
+  const date = typeof day.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day.date) ? day.date : null;
+  const notes = typeof day.notes === 'string' ? day.notes.trim().slice(0, 4000) || null : null;
+  const stops = (Array.isArray(day.stops) ? day.stops : [])
+    .filter((s) => s && typeof s.locationId === 'string' && s.locationId)
+    .slice(0, 60);
+
+  const isNew = !day.id;
+  const dayId = day.id || crypto.randomUUID();
+
+  const upsert = isNew
+    ? {
+        query: `insert into shoot_days (id, project_id, title, date, notes)
+                values ($1, $2, $3, $4, $5)
+                returning id, ${ISO('created_at')} as created_at`,
+        params: [dayId, nz(day.projectId), title, date, notes],
+      }
+    : {
+        query: `update shoot_days set project_id = $2, title = $3, date = $4, notes = $5
+                 where id = $1
+                returning id, ${ISO('created_at')} as created_at`,
+        params: [dayId, nz(day.projectId), title, date, notes],
+      };
+
+  // Same shape as saveLocation: parent upsert + wholesale child rewrite,
+  // one transaction, id minted here so the stop inserts can reference it.
+  const queries = [upsert, { query: 'delete from shoot_day_stops where day_id = $1', params: [dayId] }];
+  const stopRows = stops.map((s, i) => ({
+    day_id: dayId,
+    location_id: s.locationId,
+    position: i,
+    planned_time: clean(s.plannedTime, 40),
+    note: clean(s.note, 1000),
+  }));
+  if (stopRows.length) {
+    queries.push(bulkInsert('shoot_day_stops', ['day_id', 'location_id', 'position', 'planned_time', 'note'], stopRows));
+  }
+
+  const results = await tx(cs, queries);
+  const row = results[0] && results[0][0];
+  if (!row) return fail('shoot day not found', 404);
+  return json({ id: row.id, createdAt: row.created_at });
 }
 
 /* ---------- POST /api/locations ---------- */
@@ -507,6 +642,30 @@ export async function onRequest({ request, env, params }) {
         return json({ ok: true });
       }
       return fail(`method ${method} not allowed on /api/locations`, 405);
+    }
+
+    if (head === 'ideas') {
+      if (method === 'POST') return saveIdea(cs, await request.json());
+      if (method === 'DELETE') {
+        const id = segs[1];
+        if (!id) return fail('idea id required', 400);
+        const rows = await one(cs, 'delete from ideas where id = $1 returning id', [id]);
+        if (!rows.length) return fail('idea not found', 404);
+        return json({ ok: true });
+      }
+      return fail(`method ${method} not allowed on /api/ideas`, 405);
+    }
+
+    if (head === 'days') {
+      if (method === 'POST') return saveDay(cs, await request.json());
+      if (method === 'DELETE') {
+        const id = segs[1];
+        if (!id) return fail('day id required', 400);
+        const rows = await one(cs, 'delete from shoot_days where id = $1 returning id', [id]);
+        if (!rows.length) return fail('shoot day not found', 404);
+        return json({ ok: true });
+      }
+      return fail(`method ${method} not allowed on /api/days`, 405);
     }
 
     if (head === 'projects') {

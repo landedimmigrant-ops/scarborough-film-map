@@ -139,6 +139,52 @@ create index if not exists suggestions_geom_idx on suggestions using gist (geom)
 -- later cleaned up. Nullable: Prem's own 38 locations have no contributor.
 alter table locations add column if not exists contributor_id uuid references contributors(id) on delete set null;
 
+-- ══════════════════════════════════════════════════════════════
+-- Ideas + shoot days (added 2026-08-12, the "filmmaker console" build)
+-- ──────────────────────────────────────────────────────────────
+-- `ideas` is the loose-capture inbox: a link, a note, or an image that isn't
+-- a location yet. Placing one on the map creates a location and links it via
+-- location_id, so the idea's provenance survives its promotion.
+--
+-- `shoot_days` + `shoot_day_stops` are the manual planner: a named, dated day
+-- with an ORDERED list of stops. Order lives in `position` (0,1,2…), rewritten
+-- wholesale on every save — same delete-then-reinsert transaction pattern as
+-- locations' child rows, and the same reason `position` exists there.
+-- ══════════════════════════════════════════════════════════════
+
+create table if not exists ideas (
+  id          uuid primary key default gen_random_uuid(),
+  project_id  uuid references projects(id) on delete cascade,
+  kind        text not null default 'note',   -- note | link | image
+  title       text,
+  body        text,                            -- the note itself / a comment on the link
+  url         text,                            -- link href, or an image url (/api/photo/<key> or external)
+  location_id uuid references locations(id) on delete set null,
+  status      text not null default 'inbox',   -- inbox | archived
+  created_at  timestamptz not null default now()
+);
+create index if not exists ideas_project_idx on ideas (project_id, status, created_at);
+
+create table if not exists shoot_days (
+  id         uuid primary key default gen_random_uuid(),
+  project_id uuid references projects(id) on delete cascade,
+  title      text not null default '',
+  date       date,
+  notes      text,
+  created_at timestamptz not null default now()
+);
+create index if not exists shoot_days_project_idx on shoot_days (project_id, date);
+
+create table if not exists shoot_day_stops (
+  id           uuid primary key default gen_random_uuid(),
+  day_id       uuid not null references shoot_days(id) on delete cascade,
+  location_id  uuid not null references locations(id) on delete cascade,
+  position     int not null default 0,
+  planned_time text,    -- free text "09:30" — a plan, not a timestamp
+  note         text
+);
+create index if not exists shoot_day_stops_day_idx on shoot_day_stops (day_id, position);
+
 -- The app reads lat/lng through this view rather than decoding PostGIS WKB.
 -- Recreate it if you add a column to locations that the app needs.
 --
