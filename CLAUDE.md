@@ -268,10 +268,10 @@ through the PostGIS geography round-trip) reported **0 mismatches**, and contact
 (1) and footage rows (7) are byte-identical to the source. The docs previously said only 5 seeded
 locations existed; the real count was 38 — Prem had been adding pins in the field.
 
-`supabase-dump.json` sits at the repo root as the migration's raw source of truth. It is **not
-committed** — it's uncommitted working data, and whether a 38-location dump belongs in git is
-Prem's call (the app's own ⭳ JSON export covers the same ground on demand). There were **no
-photos** in Supabase Storage, so nothing was lost to the storage change.
+`supabase-dump.json` is committed at the repo root as the migration's raw source of truth — a
+point-in-time snapshot, deliberately not maintained (the app's ⭳ JSON export is the live backup).
+`deploy.sh` copies an explicit allowlist into `dist/`, so it never reaches the public site. There
+were **no photos** in Supabase Storage, so nothing was lost to the storage change.
 
 The importer stays useful for any future JSON: it reads the app's own ⭳ JSON export, a raw row
 dump, or a bare array, in camelCase or snake_case, and re-running is safe (same title + within 1 m
