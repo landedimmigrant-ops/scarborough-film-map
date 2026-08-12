@@ -38,6 +38,35 @@ function blankLoc() {
    keep their existing "keep the editor open and tell the truth" behaviour.
    lastApiError holds the most recent message so those alerts can say why. */
 let lastApiError = "";
+// id → { name, email, creditName, creditConsent }, filled by loadDB. Lets a
+// location card/editor name whoever suggested it.
+let contributorsById = {};
+function contributorOf(loc) { return loc && loc.contributorId ? contributorsById[loc.contributorId] : null; }
+
+/* Short label for the card chip. First name where that's meaningful, but not
+   when it's a bare initial — "A neighbour" must not become "💡 A", which reads
+   as a glitch rather than a person. Falls back to a truncated full name. */
+function shortName(name) {
+  const n = (name || "").trim();
+  if (!n) return "suggested";
+  const first = n.split(" ")[0];
+  if (first.length > 2) return first;
+  return n.length > 14 ? `${n.slice(0, 13)}…` : n;
+}
+
+/* "Suggested by …" block for the editor. Shows the contact details (that's the
+   point — Prem needs to be able to follow up) and states the consent position
+   plainly, because it decides whether this person may appear in the credits. */
+function creditLine(loc) {
+  const by = contributorOf(loc);
+  if (!by) return "";
+  const mail = by.email ? ` · <a href="mailto:${esc(by.email)}">${esc(by.email)}</a>` : "";
+  const credit = by.creditName && by.creditName !== by.name ? ` (credit as “${esc(by.creditName)}”)` : "";
+  const consent = by.creditConsent
+    ? `<span class="chip ok">✓ may credit</span>`
+    : `<span class="chip warn">✕ asked not to be credited</span>`;
+  return `<div class="credit-line">💡 Suggested by <strong>${esc(by.name)}</strong>${credit}${mail} ${consent}</div>`;
+}
 
 async function api(path, { method = "GET", body, raw, contentType } = {}) {
   const init = { method, headers: {} };
@@ -82,6 +111,11 @@ function rowToLoc(row, interviews, contacts, media) {
     lng: row.lng,
     notes: row.notes || "",
     address: row.address || "",
+    // Who suggested this place, when it came in through /suggest. null for
+    // Prem's own pins. Note that saveLocation deliberately does NOT send this
+    // back — contributor_id isn't in its column list, so editing an accepted
+    // location can't accidentally strip its attribution.
+    contributorId: row.contributor_id || null,
     contacts: (contacts || []).map((c) => ({ id: c.id, name: c.name || "", role: c.role || "", detail: c.detail || "" })),
     interviews: (interviews || []).map((i) => ({ id: i.id, subject: i.subject || "", role: i.role || "", status: i.status || "idea" })),
     footage: (media || []).filter((m) => m.kind === "footage").map((m) => ({ id: m.id, label: m.label || "", notes: m.notes || "" })),
@@ -107,6 +141,16 @@ async function loadDB() {
 
   const projects = (snap.projects || []).map((p) => ({ id: p.id, name: p.name, createdAt: new Date(p.created_at).getTime() }));
   if (!projects.length) { apiFailed("loadDB", new Error("no projects returned")); return null; }
+
+  // id → contributor, so a location can name the person who suggested it without
+  // a second request.
+  contributorsById = {};
+  (snap.contributors || []).forEach((c) => {
+    contributorsById[c.id] = {
+      id: c.id, name: c.name || "", email: c.email || "",
+      creditName: c.credit_name || "", creditConsent: !!c.credit_consent,
+    };
+  });
 
   return { projects, activeProjectId: projects[0].id, locations };
 }
@@ -277,6 +321,10 @@ new ResizeObserver(fitWhenReady).observe(map.getContainer());
   await migrateLocalStorage();
 
   render();
+
+  // Pending-suggestion count, after the first paint — the map shouldn't wait on
+  // it, and a failure here must not take the app down with it.
+  loadSuggestions().then((ok) => { if (ok) renderSuggestionBadge(); });
 })().catch((e) => { console.error("Boot failed:", e); showLoadError(); });
 
 function showLoadError() {
@@ -355,6 +403,7 @@ function openDetail(source, isNew) {
     <div class="field"><label>Neighbourhood (auto)</label><input data-hood value="${esc(editing.neighbourhood)}" readonly></div>
     <div class="field"><label>Address (auto)</label><input id="f-address" value="${esc(editing.address)}" placeholder="auto-filled from the map"></div>
     <a id="gmaps-link" class="ext-link" href="${gmapsUrl(editing)}" target="_blank" rel="noopener">🧭 Open in Google Maps ↗</a>
+    ${creditLine(editing)}
     <div class="field"><div class="row2">
       <div style="flex:1"><label>Status</label>${selectHtml("f-status", Object.keys(STATUS).map((k) => [k, STATUS[k].label]), editing.status)}</div>
       <div style="flex:1"><label>Type</label>${selectHtml("f-category", CATEGORIES.map((c) => [c, c]), editing.category)}</div>
@@ -593,6 +642,230 @@ function closePlanner() {
   restoreFocus();
 }
 document.getElementById("planner-close").onclick = closePlanner;
+
+/* ---------- suggestion review queue ----------
+   People suggest locations through the public /suggest page; those land in the
+   `suggestions` table, never in `locations`. Accepting one here is what promotes
+   it to a real pin, carrying the contributor's attribution with it. */
+let suggestions = [];
+let suggestionsLoaded = false;
+
+async function loadSuggestions() {
+  try {
+    const out = await api("suggestions");
+    suggestions = out.suggestions || [];
+    suggestionsLoaded = true;
+    return true;
+  } catch (e) { apiFailed("loadSuggestions", e); return false; }
+}
+
+function pendingCount() { return suggestions.filter((s) => s.status === "pending").length; }
+
+// The badge is the only reason Prem would think to open the panel, so it's
+// refreshed on boot and after every review action.
+function renderSuggestionBadge() {
+  const b = document.getElementById("sugg-badge");
+  const n = pendingCount();
+  b.hidden = !n;
+  b.textContent = n;
+}
+
+async function openSuggestions() {
+  if (!closeDetail()) return;   // don't discard unsaved edits underneath
+  closePlanner();
+  captureFocus();
+  const panel = document.getElementById("suggestions");
+  panel.hidden = false;
+  document.getElementById("suggestions-body").innerHTML = `<div class="empty">Loading suggestions…</div>`;
+  panel.focus();
+  if (!suggestionsLoaded && !(await loadSuggestions())) {
+    document.getElementById("suggestions-body").innerHTML =
+      `<div class="empty">Couldn't load suggestions.${lastApiError ? `<br><span class="err-detail">${esc(lastApiError)}</span>` : ""}</div>`;
+    return;
+  }
+  renderSuggestions();
+}
+
+function closeSuggestions() {
+  document.getElementById("suggestions").hidden = true;
+  restoreFocus();
+}
+document.getElementById("suggestions-close").onclick = closeSuggestions;
+document.getElementById("review-suggestions").onclick = openSuggestions;
+
+function renderSuggestions() {
+  const body = document.getElementById("suggestions-body");
+  const pending = suggestions.filter((s) => s.status === "pending");
+  const done = suggestions.filter((s) => s.status !== "pending");
+
+  if (!suggestions.length) {
+    body.innerHTML = `<div class="empty">No suggestions yet.<br><br>Share the link below and they'll show up here for review.</div>${shareBlock()}`;
+    wireShare();
+    return;
+  }
+
+  const card = (s) => {
+    // Contact details are the whole point of the queue, so they're shown plainly
+    // — but the consent state is shown just as plainly, because it decides
+    // whether this person may be named in the film.
+    const who = esc(s.contributor_name || "Anonymous");
+    const credit = s.credit_name && s.credit_name !== s.contributor_name ? ` (credit as “${esc(s.credit_name)}”)` : "";
+    const mail = s.contributor_email
+      ? `<a href="mailto:${esc(s.contributor_email)}">${esc(s.contributor_email)}</a>` : "<span class='muted'>no email</span>";
+    const consent = s.credit_consent
+      ? `<span class="chip ok">✓ may credit</span>`
+      : `<span class="chip warn">✕ no credit</span>`;
+    const statusChip = s.status === "pending" ? ""
+      : `<span class="chip ${s.status === "accepted" ? "ok" : "muted-chip"}">${esc(s.status)}</span>`;
+    return `
+      <div class="sugg" data-id="${esc(s.id)}">
+        <div class="sugg-head">
+          <strong>${esc(s.title)}</strong>${statusChip}
+        </div>
+        ${s.note ? `<p class="sugg-note">${esc(s.note)}</p>` : ""}
+        <div class="sugg-meta">
+          👤 ${who}${credit} · ${mail} · ${consent}
+        </div>
+        <div class="sugg-meta muted">
+          📍 ${Number(s.lat).toFixed(5)}, ${Number(s.lng).toFixed(5)}
+          · <a href="https://www.google.com/maps?q=${s.lat},${s.lng}" target="_blank" rel="noopener">street view ↗</a>
+          · ${esc((s.created_at || "").slice(0, 10))}
+        </div>
+        ${s.status === "pending" ? `
+          <div class="sugg-actions">
+            <button class="btn ghost sugg-show" type="button">Show on map</button>
+            <button class="btn ghost sugg-decline" type="button">Decline</button>
+            <button class="btn primary sugg-accept" type="button">Accept</button>
+          </div>` : ""}
+      </div>`;
+  };
+
+  body.innerHTML =
+    (pending.length
+      ? `<div class="field"><label>${pending.length} awaiting review</label></div>${pending.map(card).join("")}`
+      : `<div class="empty">Nothing awaiting review. 🎉</div>`) +
+    (done.length ? `<div class="field"><label>Already reviewed</label></div>${done.map(card).join("")}` : "") +
+    shareBlock();
+
+  body.querySelectorAll(".sugg").forEach((el) => {
+    const id = el.dataset.id;
+    const s = suggestions.find((x) => x.id === id);
+    const show = el.querySelector(".sugg-show");
+    if (show) show.onclick = () => {
+      // Temporary marker so Prem can eyeball the spot before committing to it.
+      map.setView([s.lat, s.lng], 16);
+      if (window._suggMarker) map.removeLayer(window._suggMarker);
+      window._suggMarker = L.circleMarker([s.lat, s.lng], { radius: 9, weight: 3, color: "#f0a93b", fillColor: "#f0a93b", fillOpacity: .5 })
+        .addTo(map).bindTooltip(`💡 ${s.title}`).openTooltip();
+    };
+    const acc = el.querySelector(".sugg-accept");
+    if (acc) acc.onclick = () => reviewSuggestion(id, "accept", acc);
+    const dec = el.querySelector(".sugg-decline");
+    if (dec) dec.onclick = () => {
+      if (!confirm(`Decline “${s.title}”? It stays in this list as declined, and ${s.contributor_name || "the contributor"} won't be credited for it.`)) return;
+      reviewSuggestion(id, "decline", dec);
+    };
+  });
+  wireShare();
+}
+
+function shareBlock() {
+  const url = `${location.origin}/suggest`;
+  return `
+    <div class="share">
+      <label>Share this link to collect suggestions</label>
+      <div class="share-row">
+        <input id="share-url" value="${esc(url)}" readonly />
+        <button class="btn ghost" id="share-copy" type="button">Copy</button>
+      </div>
+      <p class="hint-inline">Anyone with this link can suggest a location. They can't see or change your locations.</p>
+    </div>`;
+}
+function wireShare() {
+  const btn = document.getElementById("share-copy");
+  if (!btn) return;
+  btn.onclick = async () => {
+    const inp = document.getElementById("share-url");
+    try {
+      await navigator.clipboard.writeText(inp.value);
+      btn.textContent = "Copied ✓";
+    } catch {
+      // Clipboard API needs a secure context and permission; selecting the text
+      // is a working fallback rather than a dead button.
+      inp.select();
+      btn.textContent = "Press ⌘C";
+    }
+    setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+  };
+}
+
+async function reviewSuggestion(id, action, btn) {
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = action === "accept" ? "Accepting…" : "Declining…";
+  try {
+    const out = await api(`suggestions/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+    const s = suggestions.find((x) => x.id === id);
+    if (s) { s.status = out.status; s.location_id = out.locationId || null; }
+
+    if (action === "accept") {
+      // Re-read the whole snapshot rather than synthesising the new location
+      // locally: the server set its category and created_at, and guessing them
+      // here is how the list and the map drift apart.
+      const fresh = await loadDB();
+      if (fresh) { db = fresh; render(); }
+
+      // Neighbourhood tagging is a client-side ray-cast against the polygons in
+      // data/scarborough.geojson, so the Function couldn't set it and the guest
+      // page is deliberately not trusted to (a public caller could send any
+      // string). Derive it here, where the polygons are already loaded, so an
+      // accepted pin behaves like every other one in the hood filter and the
+      // scene-list grouping.
+      const loc = db.locations.find((l) => l.id === out.locationId);
+      if (loc && !loc.neighbourhood) {
+        loc.neighbourhood = findHood(loc.lat, loc.lng);
+        if (await saveLocation(loc)) render();
+        else console.error("couldn't tag the accepted location's neighbourhood:", lastApiError);
+      }
+    }
+    renderSuggestions();
+    renderSuggestionBadge();
+  } catch (e) {
+    apiFailed("reviewSuggestion", e);
+    alert(`Couldn't ${action} that suggestion.${lastApiError ? `\n\n${lastApiError}` : ""}`);
+    btn.disabled = false; btn.textContent = label;
+  }
+}
+
+/* ---------- credits export ----------
+   Only contributors who ticked the consent box AND whose suggestion was
+   accepted. The withheld count is printed so a gap is visible rather than
+   silently missing at the end of the edit. */
+async function exportCredits() {
+  let out;
+  try { out = await api("credits"); }
+  catch (e) { apiFailed("exportCredits", e); alert(`Couldn't build the credits list.${lastApiError ? `\n\n${lastApiError}` : ""}`); return; }
+
+  const list = out.credits || [];
+  if (!list.length && !out.withheldCount) {
+    alert("No credited contributors yet — accept a suggestion from someone who consented and it'll appear here.");
+    return;
+  }
+  const lines = [
+    `LOCATION CONTRIBUTORS — ${activeProject().name}`,
+    `Generated ${new Date().toISOString().slice(0, 10)}`,
+    "",
+    "With thanks to the people who put these places on the map:",
+    "",
+    ...list.map((c) => `  ${c.credit}${c.count > 1 ? `  (${c.count} locations)` : ""}`),
+  ];
+  if (out.withheldCount) {
+    lines.push("", `— ${out.withheldCount} further contributor${out.withheldCount === 1 ? "" : "s"} asked not to be credited.`);
+  }
+  lines.push("", "Contact details (not for publication):", "");
+  list.forEach((c) => lines.push(`  ${c.name}${c.email ? ` — ${c.email}` : ""}`));
+  download(lines.join("\n"), `${activeProject().name.replace(/\W+/g, "-").toLowerCase()}-credits.txt`, "text/plain");
+}
+document.getElementById("export-credits").onclick = exportCredits;
 function exportShootList(a, km, near) {
   // field-usable lines: status + shoot date on the stop line, street address underneath when known
   const stop = (n, l, d) => `${n}. ${l.title} — ${l.neighbourhood} — ${d} km — ${STATUS[l.status].label}` +
@@ -680,6 +953,9 @@ function renderList(list) {
     if (loc.contacts?.length) chips.push(`👤 ${loc.contacts.length}`);
     if (loc.photos?.filter(Boolean).length) chips.push(`📷 ${loc.photos.filter(Boolean).length}`);
     if (loc.permit && loc.permit !== "n/a") chips.push(`📋 ${loc.permit}`);
+    // The whole point of the suggestions feature: at a glance, whose idea was this?
+    const by = contributorOf(loc);
+    if (by) chips.push(`💡 ${esc(shortName(by.name))}`);
     const card = document.createElement("div");
     card.className = `card s-${loc.status}`;
     card.tabIndex = 0;
@@ -981,9 +1257,16 @@ document.getElementById("sat-toggle").addEventListener("click", () => {
 /* keyboard: Esc closes the open slide-over; Tab is trapped within it */
 document.addEventListener("keydown", (e) => {
   const detail = document.getElementById("detail"), planner = document.getElementById("planner");
-  const panel = !detail.hidden ? detail : (!planner.hidden ? planner : null);
+  const suggestions = document.getElementById("suggestions");
+  const panel = !detail.hidden ? detail : (!planner.hidden ? planner : (!suggestions.hidden ? suggestions : null));
   if (!panel) return;
-  if (e.key === "Escape") { e.preventDefault(); panel === detail ? closeDetail() : closePlanner(); return; }
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (panel === detail) closeDetail();
+    else if (panel === planner) closePlanner();
+    else closeSuggestions();
+    return;
+  }
   if (e.key !== "Tab") return;
   const f = Array.from(panel.querySelectorAll('a[href],button:not([disabled]),input,select,textarea,[tabindex]:not([tabindex="-1"])')).filter((el) => el.offsetParent !== null);
   if (!f.length) return;

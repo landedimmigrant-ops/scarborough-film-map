@@ -92,9 +92,12 @@ const nz = (v) => (v === '' || v === undefined ? null : v);
 /* ---------- GET /api/db ---------- */
 
 // Named columns rather than `select *` so adding a column to locations_view can't
-// silently change this payload's shape.
+// silently change this payload's shape. The cost of that safety is that adding a
+// column to the view is TWO edits — the view in schema.sql and this list. Forget
+// the second and the field is simply absent from the app with no error anywhere.
 const LOCATION_COLS = `id, project_id, title, neighbourhood, status, category, shoot_date,
-  best_time, parking, permit, notes, address, lat, lng, ${ISO('created_at')} as created_at`;
+  best_time, parking, permit, notes, address, contributor_id, lat, lng,
+  ${ISO('created_at')} as created_at`;
 
 async function getSnapshot(cs) {
   let projects = await one(cs, `select id, name, ${ISO('created_at')} as created_at from projects order by created_at`);
@@ -106,14 +109,19 @@ async function getSnapshot(cs) {
     return { projects, locations: [], interviews: [], contacts: [], media: [] };
   }
 
-  const [locations, interviews, contacts, media] = await tx(cs, [
+  const [locations, interviews, contacts, media, contributors] = await tx(cs, [
     { query: `select ${LOCATION_COLS} from locations_view order by created_at`, params: [] },
     { query: 'select id, location_id, subject, role, status from interviews order by position, id', params: [] },
     { query: 'select id, location_id, name, role, detail from contacts order by position, id', params: [] },
     { query: 'select id, location_id, kind, label, url, notes from media order by position, id', params: [] },
+    // Contributors ride along so a location can display WHO suggested it —
+    // the question that prompted this whole feature ("38 pins, no idea who
+    // put them in"). Small table, one extra statement in a batch already
+    // being sent.
+    { query: 'select id, name, email, credit_name, credit_consent from contributors', params: [] },
   ]);
 
-  return { projects, locations, interviews, contacts, media };
+  return { projects, locations, interviews, contacts, media, contributors };
 }
 
 /* ---------- POST /api/locations ---------- */
@@ -183,6 +191,214 @@ async function saveLocation(cs, loc) {
   return json({ id: row.id, createdAt: row.created_at });
 }
 
+/* ---------- owner gate ----------
+   Cloudflare Access is the real lock: it sits in front of this Function and
+   never forwards an unauthenticated request to an owner path at all. This is a
+   SECOND line of defence for one specific failure mode — an Access policy that
+   is missing, disabled, or whose Bypass rule is scoped too broadly. If Access
+   ever stops covering /api/*, requests start arriving without the header it
+   injects, and these routes fail closed instead of silently serving Prem's data
+   to the internet.
+
+   Be clear about the limit: with no Access in front, a client can simply send
+   the header itself, so this check alone is NOT authentication. It only has
+   teeth downstream of Access (which strips inbound Cf-Access-* headers and sets
+   its own). Treat it as a tripwire, not the lock.
+
+   Unset OWNER_EMAIL leaves the API open, which is the posture the app has had
+   all along — so nothing breaks before Access is configured. Set it in the same
+   breath as turning Access on:
+     npx wrangler pages secret put OWNER_EMAIL --project-name scarborough-film-map */
+function ownerGate(env, request) {
+  const expected = (env.OWNER_EMAIL || '').trim().toLowerCase();
+  if (!expected) return null;   // not configured yet → behave as before
+
+  const seen = (request.headers.get('Cf-Access-Authenticated-User-Email') || '').trim().toLowerCase();
+  if (!seen) {
+    return fail('This is the private side of the app and it is not signed in. ' +
+      'Expected a Cloudflare Access session.', 401);
+  }
+  if (seen !== expected) return fail(`${seen} is not allowed here.`, 403);
+  return null;
+}
+
+/* ---------- public suggestions (the ONLY unauthenticated write) ----------
+   Everything in this block is reachable by anyone with the /suggest link, so it
+   is written defensively: bounded field lengths, a coordinate bounding box, and
+   a per-email rate cap. It can only ever insert into `contributors` and
+   `suggestions` — never `locations` — so the worst case is a queue Prem has to
+   clear, not damage to the 38 curated pins. */
+
+// Greater Scarborough plus a generous margin. A suggestion outside this is
+// either a mis-click or someone poking the endpoint; neither belongs in the queue.
+const BBOX = { minLat: 43.55, maxLat: 44.00, minLng: -79.45, maxLng: -78.95 };
+
+// Trim, collapse whitespace, cap length. Returns null for empty so the column
+// stays NULL rather than storing ''.
+function clean(v, max) {
+  if (typeof v !== 'string') return null;
+  const s = v.replace(/\s+/g, ' ').trim().slice(0, max);
+  return s || null;
+}
+
+async function postSuggestion(cs, body) {
+  const title = clean(body.title, 160);
+  const name = clean(body.name, 120);
+  if (!title) return fail('Please give the place a name.', 400);
+  if (!name) return fail('Please tell us who you are, so we can credit you.', 400);
+
+  const lat = Number(body.lat), lng = Number(body.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return fail('Please pick the spot on the map.', 400);
+  if (lat < BBOX.minLat || lat > BBOX.maxLat || lng < BBOX.minLng || lng > BBOX.maxLng) {
+    return fail('That spot is outside the Scarborough area this film covers.', 400);
+  }
+
+  const email = clean(body.email, 200);
+  // Deliberately loose: one @ with something either side. Anything stricter
+  // rejects real addresses, and this field is for Prem to reply to, not to
+  // authenticate anyone.
+  if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return fail('That email address looks incomplete.', 400);
+
+  const note = clean(body.note, 2000);
+  const creditName = clean(body.creditName, 120);
+  const creditConsent = body.creditConsent === true;
+
+  // Rate cap. Keyed on email when given, otherwise on the whole pending queue
+  // depth, which is crude but prevents an anonymous flood from being unbounded.
+  if (email) {
+    const [{ n }] = await one(cs,
+      `select count(*)::int as n from suggestions s join contributors c on c.id = s.contributor_id
+        where lower(c.email) = lower($1) and s.created_at > now() - interval '1 hour'`, [email]);
+    if (n >= 10) return fail('That is a lot of suggestions in one hour — thank you! Try again a little later.', 429);
+  } else {
+    const [{ n }] = await one(cs,
+      `select count(*)::int as n from suggestions
+        where status = 'pending' and contributor_id is null and created_at > now() - interval '1 hour'`);
+    if (n >= 20) return fail('We are getting a lot of suggestions right now — please try again shortly.', 429);
+  }
+
+  // Upsert the contributor by email so one person suggesting five places earns
+  // one credit. COALESCE on update: a later blank submission must not wipe
+  // details they gave earlier. Consent is OR-ed — never revoked by omission
+  // here, but see the note below.
+  let contributorId = null;
+  if (email) {
+    const rows = await one(cs,
+      // `where email is not null` repeats contributors_email_key's predicate.
+      // Postgres cannot infer a PARTIAL unique index from the columns alone —
+      // without it this fails with 'no unique or exclusion constraint matching
+      // the ON CONFLICT specification'.
+      `insert into contributors (name, email, credit_name, credit_consent)
+       values ($1, $2, $3, $4)
+       on conflict (lower(email)) where email is not null do update set
+         name           = coalesce(excluded.name, contributors.name),
+         credit_name    = coalesce(excluded.credit_name, contributors.credit_name),
+         -- Consent is taken from THIS submission rather than OR-ed with history:
+         -- if someone ticks the box once and leaves it unticked later, honouring
+         -- the newer answer is the safer reading of what they want.
+         credit_consent = excluded.credit_consent
+       returning id`,
+      [name, email, creditName, creditConsent]);
+    contributorId = rows[0].id;
+  } else {
+    const rows = await one(cs,
+      'insert into contributors (name, credit_name, credit_consent) values ($1, $2, $3) returning id',
+      [name, creditName, creditConsent]);
+    contributorId = rows[0].id;
+  }
+
+  // Attach to the one project. The public form deliberately doesn't let the
+  // caller choose a project_id — that would be an information leak and a way to
+  // scribble into an unrelated film.
+  const [proj] = await one(cs, 'select id from projects order by created_at limit 1');
+
+  const rows = await one(cs,
+    `insert into suggestions (project_id, contributor_id, title, note, geom)
+     values ($1, $2, $3, $4, st_setsrid(st_makepoint($5, $6), 4326)::geography)
+     returning id`,
+    [proj ? proj.id : null, contributorId, title, note, lng, lat]);
+
+  return json({ ok: true, id: rows[0].id });
+}
+
+/* ---------- owner: review queue + credits ---------- */
+
+async function listSuggestions(cs) {
+  const rows = await one(cs,
+    `select id, title, note, neighbourhood, address, status, location_id, lat, lng,
+            contributor_id, contributor_name, contributor_email, contributor_phone,
+            credit_name, credit_consent,
+            ${ISO('created_at')} as created_at, ${ISO('reviewed_at')} as reviewed_at
+       from suggestions_view
+      order by (status = 'pending') desc, created_at desc`);
+  return json({ suggestions: rows });
+}
+
+async function reviewSuggestion(cs, id, action) {
+  if (action !== 'accept' && action !== 'decline') return fail(`unknown action ${action}`, 400);
+
+  const [s] = await one(cs,
+    `select id, project_id, contributor_id, title, note, neighbourhood, address, status,
+            st_y(geom::geometry) as lat, st_x(geom::geometry) as lng
+       from suggestions where id = $1`, [id]);
+  if (!s) return fail('suggestion not found', 404);
+  // Guard against a double-accept from a stale queue in another tab.
+  if (s.status !== 'pending') return fail(`that suggestion was already ${s.status}`, 409);
+
+  if (action === 'decline') {
+    await one(cs, "update suggestions set status = 'declined', reviewed_at = now() where id = $1", [id]);
+    return json({ ok: true, status: 'declined' });
+  }
+
+  // Accept: copy into `locations`, carrying attribution, then mark reviewed.
+  // One transaction so a suggestion can't end up accepted with no pin, or a pin
+  // with the suggestion still sitting in the queue.
+  const locId = crypto.randomUUID();
+  const results = await tx(cs, [
+    {
+      query: `insert into locations (id, project_id, title, neighbourhood, status, category,
+                                     notes, address, contributor_id, geom)
+              values ($1, $2, $3, $4, 'idea', 'Exterior', $5, $6, $7,
+                      st_setsrid(st_makepoint($8, $9), 4326)::geography)
+              returning id, ${ISO('created_at')} as created_at`,
+      params: [locId, s.project_id, s.title, s.neighbourhood, s.note, s.address, s.contributor_id,
+        Number(s.lng), Number(s.lat)],
+    },
+    {
+      query: "update suggestions set status = 'accepted', reviewed_at = now(), location_id = $2 where id = $1",
+      params: [id, locId],
+    },
+  ]);
+  const row = results[0] && results[0][0];
+  return json({ ok: true, status: 'accepted', locationId: locId, createdAt: row && row.created_at });
+}
+
+/* Credits: only contributors who ticked the box, and only those whose suggestion
+   actually made it onto the map. Someone whose idea was declined hasn't
+   contributed to the film, and listing them would be misleading. */
+async function getCredits(cs) {
+  const rows = await one(cs,
+    `select distinct on (c.id)
+            c.id, coalesce(nullif(c.credit_name, ''), c.name) as credit,
+            c.name, c.email, c.credit_consent,
+            count(*) over (partition by c.id) as accepted_count
+       from contributors c
+       join suggestions s on s.contributor_id = c.id
+      where c.credit_consent = true and s.status = 'accepted'
+      order by c.id, s.created_at`);
+  // Also surface who is being withheld, so the omission is visible rather than
+  // a silent gap Prem discovers at the end of the edit.
+  const [withheld] = await one(cs,
+    `select count(distinct c.id)::int as n
+       from contributors c join suggestions s on s.contributor_id = c.id
+      where c.credit_consent = false and s.status = 'accepted'`);
+  return json({
+    credits: rows.map((r) => ({ credit: r.credit, name: r.name, email: r.email, count: Number(r.accepted_count) }))
+      .sort((a, b) => a.credit.localeCompare(b.credit)),
+    withheldCount: withheld ? withheld.n : 0,
+  });
+}
+
 /* ---------- photos (R2) ---------- */
 
 async function putPhoto(env, request, url) {
@@ -224,9 +440,18 @@ export async function onRequest({ request, env, params }) {
   const head = segs[0] || '';
   const method = request.method;
 
+  // The gate goes FIRST, before any route is dispatched, so a route added later
+  // is owner-only by default rather than open by default. /api/public/* is the
+  // single deliberate exception.
+  if (head !== 'public') {
+    const denied = ownerGate(env, request);
+    if (denied) return denied;
+  }
+
   // Photos are served from R2 and need no database credential — handle them
   // before the NEON_DATABASE_URL check so a misconfigured DB doesn't blank
-  // every image on the page.
+  // every image on the page. (Owner-only: the guest page shows no photos, and
+  // an ungated POST here would be an open upload endpoint.)
   if (head === 'photo') {
     // HEAD is answered like GET (the runtime drops the body): caches, link
     // previews and `curl -I` all probe with it, and 405-ing them makes an image
@@ -247,7 +472,30 @@ export async function onRequest({ request, env, params }) {
   }
 
   try {
+    /* ── PUBLIC ──────────────────────────────────────────────────
+       Everything under /api/public/ is meant to be reachable without a login;
+       everything else on /api/ is owner-only. The prefix exists so Cloudflare
+       Access can be configured with a Bypass rule on `/api/public/*` that
+       CANNOT accidentally widen to an owner route — note that `/api/suggest*`
+       would have matched `/api/suggestions` and quietly exposed the queue,
+       which is exactly the mistake this naming avoids. Don't add an owner
+       route under /api/public/, and don't rename these to share a prefix. */
+    if (head === 'public') {
+      if (segs[1] === 'suggest' && method === 'POST') return postSuggestion(cs, await request.json());
+      return fail(`no such public route: /api/public/${segs.slice(1).join('/')}`, 404);
+    }
+
+    /* ── OWNER (already gated above) ───────────────────────────── */
     if (head === 'db' && method === 'GET') return json(await getSnapshot(cs));
+
+    if (head === 'suggestions') {
+      if (method === 'GET') return listSuggestions(cs);
+      // POST /api/suggestions/<id>/accept | /decline
+      if (method === 'POST' && segs[1] && segs[2]) return reviewSuggestion(cs, segs[1], segs[2]);
+      return fail(`method ${method} not allowed on /api/suggestions`, 405);
+    }
+
+    if (head === 'credits' && method === 'GET') return getCredits(cs);
 
     if (head === 'locations') {
       if (method === 'POST') return saveLocation(cs, await request.json());
@@ -281,10 +529,18 @@ export async function onRequest({ request, env, params }) {
 
     return fail(`no such route: /api/${segs.join('/')}`, 404);
   } catch (e) {
-    // The message can carry SQL text but never the connection string (neon()
-    // only ever puts it in a header), so it's safe to hand back — and this is
-    // a single-user app where a real error beats a generic 500.
     console.error('api error', e);
+    // On OWNER routes, hand back the real message: it's Prem's own data and a
+    // real error beats a generic 500 when something breaks in the field.
+    // On the PUBLIC route, don't — these messages carry SQL text, column names
+    // and stack frames, and a stranger submitting a location has no business
+    // seeing the schema. They get something actionable instead.
+    if (head === 'public') {
+      return fail("Something went wrong saving that suggestion. It's not your fault — " +
+        'please try again in a moment.', 500);
+    }
+    // The message can carry SQL text but never the connection string (neon()
+    // only ever puts it in a header), so it's safe to hand back here.
     return fail(e.message || 'unknown error', 500);
   }
 }

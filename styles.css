@@ -81,8 +81,56 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
   border-top: 1px solid var(--line); padding: 10px 14px; display: flex;
   align-items: center; justify-content: space-between; gap: 8px;
 }
-.foot-actions { display: flex; gap: 6px; }
+/* wraps because Credits made this a three-button row, which overflows 340px */
+.foot-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .foot-actions .btn { flex: 0 0 auto; }
+
+/* ---------- suggestion review queue ---------- */
+/* The bare .badge class sets a dark text colour with no background, so the
+   pending count needs its own fill to be visible at all. */
+#sugg-badge { background: var(--scouting); margin-left: 6px; }
+#review-suggestions { display: inline-flex; align-items: center; justify-content: center; }
+
+.sugg {
+  background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--scouting);
+  border-radius: 8px; padding: 11px 12px; margin-bottom: 10px;
+}
+.sugg-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.sugg-head strong { font-size: 14px; }
+.sugg-note {
+  margin: 8px 0 0; font-size: 13px; color: #c7d2dd; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+}
+.sugg-meta { margin-top: 8px; font-size: 12px; color: #c7d2dd; word-break: break-word; }
+.sugg-meta.muted, .sugg .muted { color: var(--muted); }
+.sugg-meta a { color: var(--accent); }
+.sugg-actions { display: flex; gap: 6px; margin-top: 11px; }
+.sugg-actions .btn { flex: 1; padding: 8px 10px; font-size: 13px; }
+
+/* Consent state has to be readable at a glance — it decides whether a real
+   person may be named in the film. */
+.chip.ok { color: var(--shot); border-color: rgba(70, 201, 139, .4); background: rgba(70, 201, 139, .1); }
+.chip.warn { color: var(--scouting); border-color: rgba(240, 169, 59, .4); background: rgba(240, 169, 59, .1); }
+.chip.muted-chip { color: var(--muted); }
+
+/* "Suggested by" line in the location editor */
+.credit-line {
+  margin: 0 0 12px; padding: 9px 11px; font-size: 12px; line-height: 1.6;
+  background: rgba(240, 169, 59, .08); border: 1px solid rgba(240, 169, 59, .28);
+  border-radius: 8px; color: #c7d2dd;
+}
+.credit-line strong { color: var(--text); }
+.credit-line a { color: var(--accent); }
+
+.share { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.share label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .4px; }
+.share-row { display: flex; gap: 6px; }
+.share-row input {
+  flex: 1; min-width: 0; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; font-size: 12px;
+}
+.share-row .btn { flex: 0 0 auto; }
+.hint-inline { margin: 8px 0 0; font-size: 11px; color: var(--muted); line-height: 1.5; }
 .count { font-size: 12px; color: var(--muted); }
 
 .btn { border: 1px solid var(--line); background: var(--panel-2); color: var(--text);

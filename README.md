@@ -40,7 +40,10 @@ Get the string from `.neon`, or `npx neonctl connection-string --project-id live
 - **Plan a shoot day** — pick a location, set a radius, get an ordered list of everything
   nearby (with distances) to shoot in one day. Exports to a text shoot list.
 - **Search & filter** — across titles, people, and notes; by status and neighbourhood.
-- **Export** — the whole project to JSON.
+- **Collect suggestions** — send anyone the `/suggest` link: they drop a pin, say why the place
+  matters, and leave their name, email and how they'd like to be credited. Submissions queue up for
+  review; accepting one turns it into a real location with the contributor attached.
+- **Export** — the whole project to JSON, a Markdown scene list, or a contributor credits list.
 - **Responsive** — usable on a phone in the field.
 
 ## Open data + licences
@@ -80,6 +83,8 @@ allow-all policy to be usable at all.
 | `tools/neon.mjs` | Node-side Neon access for the scripts below |
 | `tools/db-exec.mjs` | run SQL against the database |
 | `tools/import-json.mjs` | load locations from a JSON export |
+| `suggest.html` / `.js` / `.css` | the public suggestion page served at `/suggest` |
+| `docs/access-setup.md` | **read this** — locking the private side with Cloudflare Access |
 
 ## Data model
 
@@ -144,9 +149,12 @@ npx wrangler r2 bucket create scarborough-film-map-photos
 and bind it as **PHOTOS** under Pages → Settings → Bindings. Until that's done, `/api/photo`
 returns a clear 503 and the rest of the app is unaffected.
 
-Note: the deployed URL is public — anyone who finds it can read and write, the same posture as
-the anon key it replaced. Cloudflare Access (Zero Trust, free tier) can gate it behind an email
-login if that changes.
+### ⚠️ Before sharing the /suggest link
+
+The deployed host is currently open — anyone with the URL can read and write all your locations.
+That was tolerable while nobody had the URL; it isn't once contributors have a link to the same
+host. **[`docs/access-setup.md`](docs/access-setup.md)** walks through gating the private side with
+Cloudflare Access (Zero Trust, free tier) while leaving `/suggest` and `/api/public/*` open.
 
 ## PostGIS
 
@@ -171,4 +179,5 @@ order by metres;
 - [x] Offline PWA (installable, works without signal in the field)
 - [x] Photo upload to object storage (vs. pasted URLs) — code ready; needs R2 enabled on the account
 - [x] Script-writing export (locations → Markdown scene list)
+- [x] Crowd-sourced suggestions + contributor credits
 - [ ] Public website export from the same data

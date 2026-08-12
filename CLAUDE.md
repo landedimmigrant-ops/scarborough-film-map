@@ -38,6 +38,9 @@ were recovered**: Supabase came back mid-migration and everything was pulled acr
   (`functions/api/[[route]].js`) — the browser holds no credential at all
 - Reference photos: code path moved to **Cloudflare R2** via `/api/photo/<key>` — *pending R2 being
   enabled on the account* (see Storage below); the route returns a clear 503 until then
+- **Crowd-sourced suggestions**: a public `/suggest` page anyone can be sent; submissions land in a
+  review queue (💡 Suggestions in the sidebar) with the contributor's name, email and credit
+  consent; accepting one promotes it to a real attributed location. 🎬 Credits exports the list.
 
 ### Two map modes (interaction model)
 - **Mark mode (default):** click anywhere → drop + auto-name a pin. Drag the pin to fine-tune (re-identifies on drop).
@@ -89,6 +92,10 @@ contacts, footage, notes), which is the "script-writing export" roadmap item.
       that's the only outstanding item in the whole migration.
 - [x] Off Supabase onto Neon — shipped, deployed and verified 2026-08-11 (see the Neon section):
       production secret set, all 38 locations imported and diffed, live site serving them.
+- [x] Crowd-sourced location suggestions + contributor credits — shipped 2026-08-12.
+      **Blocked on Prem:** Cloudflare Access must be configured before the /suggest link is shared,
+      or the private side of the app stays open to anyone with the URL. Step-by-step:
+      [`docs/access-setup.md`](docs/access-setup.md).
 - [ ] Public website export / embed from the same data
 - [x] Script-writing export (locations → scene list) — shipped 2026-07-01 as the 📝 Scenes Markdown export
 
@@ -143,7 +150,8 @@ Vanilla JS + Leaflet. No framework, no bundler. Files:
 |---|---|
 | `index.html` | Shell: sidebar + map pane + two slide-over panels (editor, planner) |
 | `app.js` | All client logic (sectioned with comments); the `/api/*` client is at the top |
-| `functions/api/[[route]].js` | The entire backend: routes, SQL over HTTP, R2 photo put/get |
+| `functions/api/[[route]].js` | The entire backend: routes, SQL over HTTP, R2 photo put/get, the owner gate |
+| `suggest.html` / `suggest.js` / `suggest.css` | The **public** guest suggestion page at `/suggest` — standalone, no service worker, shows none of Prem's locations |
 | `schema.sql` | The database, re-appliable: `node tools/db-exec.mjs --file schema.sql` |
 | `tools/neon.mjs` | Node-side Neon access (dependency-free) shared by the scripts below |
 | `tools/db-exec.mjs` | Run SQL / apply schema.sql |
@@ -200,6 +208,70 @@ db = {
   } ]
 }
 ```
+
+## Suggestions, contributors & the public/private split
+
+Prem asked people for location ideas and lost track of who suggested what. That's what
+`contributors` + `suggestions` are for, and it's what forced the app to grow an auth boundary.
+
+**Read [`docs/access-setup.md`](docs/access-setup.md) before touching any of this.** Until Cloudflare
+Access is configured the private side is open to anyone with the URL, which was fine when nobody had
+it and is not fine now that a `/suggest` link exists on the same host.
+
+### The route split is load-bearing
+
+| Prefix | Reachable by | |
+|---|---|---|
+| `/api/public/*` | anyone | currently just `POST /api/public/suggest` |
+| everything else on `/api/` | Prem only | gated by Access, plus the `ownerGate()` tripwire |
+
+`/api/public/suggest` vs `/api/suggestions` are deliberately NOT a shared prefix: an Access Bypass
+rule written as `/api/suggest*` would also match `/api/suggestions` and expose the review queue —
+every contributor's email address. Don't rename them to share a prefix, and don't add an owner route
+under `/api/public/`. `onRequest` runs the gate BEFORE dispatch so a route added later is owner-only
+by default.
+
+### Why `suggestions` is its own table
+
+`POST /api/public/suggest` is the only unauthenticated write in the app. Confining it to its own
+table means the public endpoint has no reach into the 38 curated locations at all — the review queue
+is the security boundary, not just workflow. Accepting is an owner action that copies the row into
+`locations`, carrying `contributor_id`.
+
+Public-endpoint guards, all in `postSuggestion`: field length caps, a Scarborough bounding box, a
+loose email sanity check, and a per-email hourly rate cap (10, or 20 for anonymous). Errors thrown
+inside it return a generic message — the owner routes return the real one, but a stranger has no
+business seeing SQL text or column names.
+
+### Consent is not implied
+
+Suggesting a location is **not** the same as agreeing to be named in a film's credits.
+`contributors.credit_consent` defaults to `false`, the form's checkbox is opt-in, and the credits
+export filters on it. A later submission's answer overwrites the earlier one (honouring the newer
+answer is the safer reading). `GET /api/credits` also returns `withheldCount` so an omission is
+visible rather than a silent gap discovered at the end of the edit.
+
+Contributors are deduplicated on `lower(email)` via a **partial** unique index — so `ON CONFLICT`
+must repeat the predicate (`where email is not null`), or Postgres can't infer the index and throws
+42P10. One person suggesting five places is one credit.
+
+### Neighbourhood tagging on accept
+
+`findHood` is a client-side ray-cast against `data/scarborough.geojson`, so the Function can't set a
+suggestion's neighbourhood and the guest page is deliberately not trusted to (a public caller could
+send any string). `reviewSuggestion` in app.js derives it after accepting, where the polygons are
+already loaded. A suggestion accepted with raw SQL/curl will have a NULL neighbourhood.
+
+### Attribution round-trip
+
+`locations.contributor_id` is exposed through `locations_view`, carried in the `/api/db` snapshot
+alongside a `contributors` array, and shown as a 💡 chip on list cards plus a "Suggested by …" block
+in the editor. `saveLocation` deliberately does NOT include `contributor_id` in its column list, so
+editing an accepted location can't strip its attribution.
+
+⚠️ Adding a column to `locations_view` is **two** edits: the view in `schema.sql` AND `LOCATION_COLS`
+in the Function. Forget the second and the field is silently absent from the app with no error —
+this bit once already, on `contributor_id`.
 
 ## Neon (the database)
 

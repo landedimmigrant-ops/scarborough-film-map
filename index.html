@@ -43,6 +43,9 @@
           <button id="use-location" class="btn ghost" title="Drop a pin at your current GPS location">📍 My location</button>
           <button id="plan-day" class="btn ghost" title="Build a shoot list from nearby locations">🗓 Plan a day</button>
         </div>
+        <div class="row">
+          <button id="review-suggestions" class="btn ghost" title="Review locations people have suggested">💡 Suggestions<span id="sugg-badge" class="badge" hidden>0</span></button>
+        </div>
       </div>
 
       <div class="stats" id="stats"></div>
@@ -52,6 +55,7 @@
         <div class="foot-actions">
           <button id="export" class="btn ghost" title="Download this project as JSON">⭳ JSON</button>
           <button id="export-scenes" class="btn ghost" title="Markdown scene list for script-writing">📝 Scenes</button>
+          <button id="export-credits" class="btn ghost" title="Contributor credits list (only those who consented)">🎬 Credits</button>
         </div>
         <span class="count" id="count">0 locations</span>
       </footer>
@@ -66,6 +70,15 @@
         <button class="icon-btn" id="detail-close" title="Close" aria-label="Close">✕</button>
       </header>
       <div class="panel-body" id="detail-body"></div>
+    </section>
+
+    <!-- Suggestion review queue -->
+    <section id="suggestions" class="panel" role="dialog" aria-modal="true" aria-label="Review suggested locations" tabindex="-1" hidden>
+      <header class="panel-head">
+        <strong>💡 Suggested locations</strong>
+        <button class="icon-btn" id="suggestions-close" title="Close" aria-label="Close">✕</button>
+      </header>
+      <div class="panel-body" id="suggestions-body"></div>
     </section>
 
     <!-- Shoot-day planner -->

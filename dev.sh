@@ -20,4 +20,11 @@ if [ ! -f .dev.vars ]; then
   exit 1
 fi
 
-exec npx wrangler pages dev . --port 8138 --r2 PHOTOS "$@"
+# --compatibility-date is PINNED deliberately. Left unset, wrangler defaults it to
+# *today's* date, and the moment that date is newer than the installed workerd
+# binary supports the runtime refuses to boot:
+#   "This Worker requires compatibility date 2026-08-12, but the newest date
+#    supported by this server binary is 2026-08-11"
+# which turns a working dev server into a hard failure at midnight, with an error
+# that looks nothing like a clock problem. Bump this when you bump wrangler.
+exec npx wrangler pages dev . --port 8138 --r2 PHOTOS --compatibility-date=2026-08-11 "$@"

@@ -102,10 +102,20 @@ self.addEventListener("fetch", (e) => {
   if (req.method !== "GET") return; // writes always hit the network
   const url = new URL(req.url);
   if (url.origin === location.origin) {
+    // The public guest page is left entirely alone. It isn't part of Prem's app,
+    // it's a one-visit page reached from a shared link, and a contributor must
+    // never be served a cached copy of a form — nor should visiting it seed this
+    // worker's caches. (It registers no worker itself; this guards the case where
+    // Prem's own browser, which HAS the worker, opens the link to check it.)
+    if (url.pathname === "/suggest" || url.pathname.startsWith("/suggest.")) return;
+
     // The API is same-origin now (it was supabase.co before the Neon migration), so
     // these two must be tested BEFORE the app-shell branch below — otherwise data
     // and photos land in the shell cache under shell rules.
     if (url.pathname.startsWith("/api/photo/")) { e.respondWith(cacheFirstCapped(req, PHOTOS, PHOTO_CAP)); return; }
+    // Never cache the public write path or the review queue: a cached 429 or a
+    // stale queue is worse than an honest network error.
+    if (url.pathname.startsWith("/api/public/")) return;
     if (url.pathname.startsWith("/api/")) { e.respondWith(networkFirst(req, API)); return; }
     e.respondWith(networkFirst(req, SHELL, true)); return;
   }

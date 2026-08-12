@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Suggest a location — Scarborough documentary</title>
+  <meta name="theme-color" content="#0f1419" />
+  <meta name="description" content="Know a place in Scarborough that belongs in this film? Put it on the map." />
+  <!-- No manifest and no service worker on purpose: this is a page people visit
+       once from a shared link, not an app they install. Keeping it SW-free means
+       a contributor never gets a stale cached copy of the form. -->
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="suggest.css" />
+</head>
+<body>
+  <main id="wrap">
+    <header id="intro">
+      <h1>Help map <span>Scarborough</span></h1>
+      <p class="lede">
+        I'm making a documentary about Scarborough, and the locations are the heart of it —
+        the corners, businesses, parks and buildings that actually mean something here.
+        <strong>If you know a place that belongs in this film, put it on the map.</strong>
+      </p>
+    </header>
+
+    <form id="form" novalidate>
+      <ol id="steps">
+        <li class="step">
+          <h2><span class="num">1</span> Find the place</h2>
+          <div class="search-row">
+            <input id="place-q" type="search" placeholder="Search an address or place name…"
+                   autocomplete="off" aria-label="Search for a place" />
+            <button type="button" id="locate" class="btn ghost" title="Use my current location">📍</button>
+          </div>
+          <ul id="place-results" hidden></ul>
+          <div id="map" aria-label="Map of Scarborough — tap to place your pin"></div>
+          <p class="hint" id="map-hint">Tap the map to drop a pin. Drag it to fine-tune.</p>
+          <p class="picked" id="picked" hidden></p>
+        </li>
+
+        <li class="step">
+          <h2><span class="num">2</span> Tell me about it</h2>
+          <label for="f-title">What is this place called?</label>
+          <input id="f-title" maxlength="160" placeholder="e.g. Dragon Centre, Bluffer's Park, my old barbershop" />
+
+          <label for="f-note">Why does it matter? <span class="opt">optional, but this is the good part</span></label>
+          <textarea id="f-note" rows="4" maxlength="2000"
+            placeholder="What happens here, who's there, what it meant to you, what it looks like at 6am…"></textarea>
+        </li>
+
+        <li class="step">
+          <h2><span class="num">3</span> Who are you?</h2>
+          <p class="hint">So I can ask follow-up questions — and credit you properly.</p>
+
+          <label for="f-name">Your name</label>
+          <input id="f-name" maxlength="120" placeholder="First and last" />
+
+          <label for="f-email">Email <span class="opt">optional</span></label>
+          <input id="f-email" type="email" maxlength="200" placeholder="you@example.com" />
+
+          <label for="f-credit">Preferred credit name <span class="opt">optional — if different from above</span></label>
+          <input id="f-credit" maxlength="120" placeholder="How you'd like to appear in the credits" />
+
+          <label class="check">
+            <input type="checkbox" id="f-consent" />
+            <span>You may credit me in the film if you use this location.</span>
+          </label>
+          <p class="hint small">
+            Leave it unticked and your suggestion still counts — you just won't be named.
+            Your email is only ever used to contact you about this film; it isn't shared or published.
+          </p>
+        </li>
+      </ol>
+
+      <div id="actions">
+        <button type="submit" id="submit" class="btn primary">Send suggestion</button>
+        <p id="err" class="err" hidden role="alert"></p>
+      </div>
+    </form>
+
+    <section id="thanks" hidden aria-live="polite">
+      <h2>Got it — thank you.</h2>
+      <p id="thanks-body"></p>
+      <button type="button" id="again" class="btn ghost">Suggest another place</button>
+    </section>
+
+    <footer id="foot">
+      <span>Boundaries: City of Toronto Open Data · Map: OpenStreetMap contributors</span>
+    </footer>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="suggest.js"></script>
+</body>
+</html>
