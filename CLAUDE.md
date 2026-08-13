@@ -191,6 +191,7 @@ Vanilla JS + Leaflet. No framework, no bundler. Files:
 | `tools/db-exec.mjs` | Run SQL / apply schema.sql |
 | `tools/import-json.mjs` | Load locations from a JSON export — the data-recovery path |
 | `dev.sh` / `deploy.sh` | Local Wrangler dev server / Pages deploy |
+| `docs/design.md` | **Design brief** — art direction, honest critique, priorities, and the JS⇄CSS contract a restyle must not break. Read it before any visual work |
 | `sw.js` | Service worker at ROOT scope (upgrades v2 installs in place) — offline strategies per resource type (see file header comment) |
 | `manifest.webmanifest` + `icons/` | PWA install metadata + app icons (regenerable with PIL — pin motif, app palette) |
 | `data/scarborough.geojson` | 30 Scarborough neighbourhood polygons (WGS84) + centroids |
